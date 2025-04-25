@@ -15,7 +15,7 @@ Thumbs.db
 # ŠÂ‹«İ’èƒtƒ@ƒCƒ‹
 .env
 *.local
-.env
+*.env
 
 # Node.jsŒn
 node_modules/
