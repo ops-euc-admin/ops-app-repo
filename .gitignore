@@ -1,0 +1,33 @@
+# OSごとの一時ファイル
+.DS_Store
+Thumbs.db
+
+# エディタごとの一時ファイル
+*.swp
+*.swo
+*.bak
+
+# ログファイルやキャッシュ
+*.log
+*.tmp
+.cache/
+
+# 環境設定ファイル
+.env
+*.local
+
+# Node.js系
+node_modules/
+dist/
+
+# Python系
+__pycache__/
+*.pyc
+
+# ビルド成果物
+build/
+out/
+
+# Git管理に含めたい例外
+!.env.example
+ 
