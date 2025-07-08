@@ -42,7 +42,6 @@ async function queryDifyAgentStreaming(query, userId, conversationId = null, onD
   const payload = {
     inputs: {
       channel: channelId,
-      user: userId
     },
     query,
     response_mode: 'streaming',
