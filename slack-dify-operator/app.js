@@ -38,14 +38,18 @@ const app = new App({
 });
 
 // Streaming モード
-async function queryDifyAgentStreaming(query, userId, conversationId = null, onDataChunk) {
+async function queryDifyAgentStreaming(query, userId, conversationId = null, onDataChunk, channelId = null) {
   const payload = {
-    inputs: {},
+    inputs: {
+      channel: channelId,
+      user: userId
+    },
     query,
     response_mode: 'streaming',
     user: userId
   };
   if (conversationId) payload.conversation_id = conversationId;
+
 
   try {
     const response = await fetch('https://dify.app.uzabase.com/v1/chat-messages', {
@@ -119,6 +123,7 @@ function cleanForSlack(text) {
 }
 
 app.event('app_mention', async ({ event, client }) => {
+  console.log(`[Slack] app_mention received: user=${event.user}, channel=${event.channel}`);
   const rawQuery = event.text;
   const cleanQuery = cleanQueryFromSlack(rawQuery);
 
@@ -173,7 +178,8 @@ app.event('app_mention', async ({ event, client }) => {
           lastUpdateTime = now;
         }
       }
-    }
+    },
+    event.channel
   );
 
   if (postMessagePromise) {
