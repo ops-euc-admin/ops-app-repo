@@ -1,4 +1,4 @@
-﻿const fetch = require('node-fetch');
+const fetch = require('node-fetch');
 const fs = require('fs');
 const dotenv = require('dotenv');
 const { createObjectCsvWriter } = require('csv-writer');
@@ -7,7 +7,6 @@ dotenv.config();
 
 const SLACK_TOKEN = process.env.SLACK_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
-const TARGET_USER = process.env.TARGET_USER;
 const INCLUDE_THREADS = process.env.INCLUDE_THREADS === 'true';
 
 const headers = {
@@ -15,7 +14,7 @@ const headers = {
   'Content-Type': 'application/json'
 };
 
-// ✅ レート制限対応付き fetch
+// レート制限対応付き fetch
 async function fetchWithRateLimitRetry(url, options, label = '') {
   let attempt = 0;
   while (true) {
@@ -32,7 +31,7 @@ async function fetchWithRateLimitRetry(url, options, label = '') {
   }
 }
 
-// ✅ チャンネル名取得
+// チャンネル名取得
 async function getChannelName(channelId) {
   const res = await fetchWithRateLimitRetry(
     `https://slack.com/api/conversations.info?channel=${channelId}`,
@@ -44,7 +43,7 @@ async function getChannelName(channelId) {
   return data.channel.name;
 }
 
-// ✅ スレッド返信取得
+// スレッド返信取得
 async function fetchThreadReplies(channelId, threadTs) {
   const url = `https://slack.com/api/conversations.replies?channel=${channelId}&ts=${threadTs}&limit=20`;
   const res = await fetchWithRateLimitRetry(url, { method: 'GET', headers }, `replies:${channelId}`);
@@ -53,14 +52,13 @@ async function fetchThreadReplies(channelId, threadTs) {
   return data.messages || [];
 }
 
-// ✅ メッセージ＋スレッド取得
+// メッセージ＋スレッド取得
 async function fetchMessagesWithThreads(channelId) {
   let hasMore = true;
   let cursor = null;
-  let allMessages = [];
+  const allMessages = [];
 
   while (hasMore) {
-    // 最新の投稿から取得するため 'oldest' パラメータを削除
     const params = new URLSearchParams({ channel: channelId, limit: '200' });
     if (cursor) params.append('cursor', cursor);
 
@@ -91,10 +89,10 @@ async function fetchMessagesWithThreads(channelId) {
     await new Promise(resolve => setTimeout(resolve, 300));
   }
 
-  return allMessages; // 最新→過去の順で返す
+  return allMessages;
 }
 
-// ✅ メイン処理
+// メイン処理
 (async () => {
   try {
     const channelName = await getChannelName(CHANNEL_ID);
@@ -102,15 +100,17 @@ async function fetchMessagesWithThreads(channelId) {
 
     const allMessages = await fetchMessagesWithThreads(CHANNEL_ID);
 
+    // 投稿者でフィルタしない
     const userMessages = allMessages
-      .filter(msg => msg.user === TARGET_USER && msg.text)
+      .filter(msg => msg.text)
       .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
 
     const csvWriter = createObjectCsvWriter({
-      path: 'dify_knowledge.csv',
+      path: 'all_slack_messages.csv',
       header: [
-        { id: 'question', title: 'question' },
-        { id: 'answer', title: 'answer' },
+        { id: 'user', title: 'user' },
+        { id: 'text', title: 'text' },
+        { id: 'ts', title: 'timestamp' },
         { id: 'thread_ts', title: 'thread_ts' }, // スレッド番号を追加
         { id: 'source', title: 'source' }
       ]
@@ -118,16 +118,19 @@ async function fetchMessagesWithThreads(channelId) {
 
     const records = userMessages.map((msg) => {
       const cleanText = msg.text.replace(/\n/g, ' ').trim();
+      // tsとthread_tsが同じ場合は空欄にする
+      const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
       return {
-        question: cleanText,
-        answer: cleanText,
-        thread_ts: msg.thread_ts || '', // スレッド番号を追加
+        user: msg.user || '',
+        text: cleanText,
+        ts: msg.ts,
+        thread_ts: threadId,
         source: sourceLabel
       };
     });
 
     await csvWriter.writeRecords(records);
-    console.log(`✅ CSV出力完了: dify_knowledge.csv（${records.length}件）`);
+    console.log(`✅ CSV出力完了: all_slack_messages.csv（${records.length}件）`);
   } catch (err) {
     console.error("❌ 取得エラー:", err.message);
   }
