@@ -6,7 +6,7 @@ const { createObjectCsvWriter } = require('csv-writer');
 dotenv.config();
 
 const SLACK_TOKEN = process.env.SLACK_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID;
+const CHANNEL_IDS = process.env.CHANNEL_IDS ? process.env.CHANNEL_IDS.split(',') : [process.env.CHANNEL_ID];
 const INCLUDE_THREADS = process.env.INCLUDE_THREADS === 'true';
 
 const headers = {
@@ -95,42 +95,47 @@ async function fetchMessagesWithThreads(channelId) {
 // メイン処理
 (async () => {
   try {
-    const channelName = await getChannelName(CHANNEL_ID);
-    const sourceLabel = `Slack #${channelName}`;
+    for (const channelIdRaw of CHANNEL_IDS) {
+      const channelId = channelIdRaw.trim();
+      if (!channelId) continue;
+      const channelName = await getChannelName(channelId);
+      // ファイル名に使えない文字を除去
+      const safeChannelName = channelName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const sourceLabel = `Slack #${channelName}`;
 
-    const allMessages = await fetchMessagesWithThreads(CHANNEL_ID);
+      const allMessages = await fetchMessagesWithThreads(channelId);
 
-    // 投稿者でフィルタしない
-    const userMessages = allMessages
-      .filter(msg => msg.text)
-      .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
+      // 投稿者でフィルタしない
+      const userMessages = allMessages
+        .filter(msg => msg.text)
+        .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
 
-    const csvWriter = createObjectCsvWriter({
-      path: 'all_slack_messages.csv',
-      header: [
-        { id: 'user', title: 'user' },
-        { id: 'text', title: 'text' },
-        { id: 'ts', title: 'timestamp' },
-        { id: 'thread_ts', title: 'thread_ts' }, // スレッド番号を追加
-        { id: 'source', title: 'source' }
-      ]
-    });
+      const csvWriter = createObjectCsvWriter({
+        path: `all_slack_messages_${safeChannelName}.csv`,
+        header: [
+          { id: 'user', title: 'user' },
+          { id: 'text', title: 'text' },
+          { id: 'ts', title: 'timestamp' },
+          { id: 'thread_ts', title: 'thread_ts' },
+          { id: 'source', title: 'source' }
+        ]
+      });
 
-    const records = userMessages.map((msg) => {
-      const cleanText = msg.text.replace(/\n/g, ' ').trim();
-      // tsとthread_tsが同じ場合は空欄にする
-      const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
-      return {
-        user: msg.user || '',
-        text: cleanText,
-        ts: msg.ts,
-        thread_ts: threadId,
-        source: sourceLabel
-      };
-    });
+      const records = userMessages.map((msg) => {
+        const cleanText = msg.text.replace(/\n/g, ' ').trim();
+        const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
+        return {
+          user: msg.user || '',
+          text: cleanText,
+          ts: msg.ts,
+          thread_ts: threadId,
+          source: sourceLabel
+        };
+      });
 
-    await csvWriter.writeRecords(records);
-    console.log(`✅ CSV出力完了: all_slack_messages.csv（${records.length}件）`);
+      await csvWriter.writeRecords(records);
+      console.log(`✅ CSV出力完了: all_slack_messages_${safeChannelName}.csv（${records.length}件）`);
+    }
   } catch (err) {
     console.error("❌ 取得エラー:", err.message);
   }
