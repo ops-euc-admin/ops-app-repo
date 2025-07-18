@@ -58,7 +58,7 @@
 
 ## 3. 必要なパッケージのインストール
 
-仮想環境が有効化された状態で、ターミナルで以下を順番に実行
+仮想環境が有効化された状態で、ターミナルで以下を実行
 - `pip install pandas`
 
 ---
@@ -71,7 +71,7 @@
 
 ### 4-2. スクリプト
 
-- `slack-messages-knowledge.py`
+- `slack-messages-knowledge.py` を使用
 
 ---
 
