@@ -1,34 +1,35 @@
-# OS‚²‚Æ‚ÌˆêŽžƒtƒ@ƒCƒ‹
+# OSï¿½ï¿½ï¿½Æ‚ÌˆêŽžï¿½tï¿½@ï¿½Cï¿½ï¿½
 .DS_Store
 Thumbs.db
 
-# ƒGƒfƒBƒ^‚²‚Æ‚ÌˆêŽžƒtƒ@ƒCƒ‹
+# ï¿½Gï¿½fï¿½Bï¿½^ï¿½ï¿½ï¿½Æ‚ÌˆêŽžï¿½tï¿½@ï¿½Cï¿½ï¿½
 *.swp
 *.swo
 *.bak
 
-# ƒƒOƒtƒ@ƒCƒ‹‚âƒLƒƒƒbƒVƒ…
+# ï¿½ï¿½ï¿½Oï¿½tï¿½@ï¿½Cï¿½ï¿½ï¿½ï¿½Lï¿½ï¿½ï¿½bï¿½Vï¿½ï¿½
 *.log
 *.tmp
 .cache/
 
-# ŠÂ‹«Ý’èƒtƒ@ƒCƒ‹
+# ï¿½Â‹ï¿½ï¿½Ý’ï¿½tï¿½@ï¿½Cï¿½ï¿½
 .env
 *.local
 *.env
 
-# Node.jsŒn
+# Node.jsï¿½n
 node_modules/
 dist/
 
-# PythonŒn
+# Pythonï¿½n
 __pycache__/
 *.pyc
 
-# ƒrƒ‹ƒh¬‰Ê•¨
+# ï¿½rï¿½ï¿½ï¿½hï¿½ï¿½ï¿½Ê•ï¿½
 build/
 out/
 *.csv
 
-# GitŠÇ—‚ÉŠÜ‚ß‚½‚¢—áŠO
+# Gitï¿½Ç—ï¿½ï¿½ÉŠÜ‚ß‚ï¿½ï¿½ï¿½ï¿½ï¿½O
 !.env.example
+package-lock.json
