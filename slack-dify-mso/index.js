@@ -6,7 +6,7 @@ import fetch from 'node-fetch';
 const app = new App({
   socketMode: true,
   appToken: process.env.SLACK_APP_TOKEN,
-  token: process.env.SLACK_BOT_TOKEN,
+  token: process.env.SLACK_BOT_TOKEN
 });
 
 // 会話IDを一時的に保存するためのメモリ上のストア
