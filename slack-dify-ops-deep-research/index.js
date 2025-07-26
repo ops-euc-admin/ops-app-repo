@@ -75,6 +75,10 @@ async function handleUserMessage({ event, client }) {
 
     let fullAnswer = "";
     let newConversationId = "";
+    let lastUpdateText = "";
+    let lastUpdateTime = Date.now();
+    const updateInterval = 2000; // 2秒ごとにSlackを更新
+
     for await (const chunk of response.body) {
       if (parentDeleted) {
         throw new Error('親スレッドが削除されたため投稿を中断します');
@@ -87,6 +91,23 @@ async function handleUserMessage({ event, client }) {
           if (jsonData.answer) { fullAnswer += jsonData.answer; }
           if (jsonData.conversation_id && !newConversationId) { newConversationId = jsonData.conversation_id; }
         } catch (e) { /* パースエラーは無視 */ }
+      }
+      // 2秒ごとにSlackメッセージを更新（fullAnswerが空の間は更新しない）
+      if (Date.now() - lastUpdateTime > updateInterval && !parentDeleted) {
+        if (fullAnswer.trim().length > 0) {
+          const answerText = formatForSlack(fullAnswer.trim());
+          const messages = splitMessage(answerText);
+          if (messages[0] !== lastUpdateText) {
+            await client.chat.update({
+              channel: event.channel,
+              ts: pending.ts,
+              text: messages[0],
+              thread_ts: threadTs
+            });
+            lastUpdateText = messages[0];
+          }
+          lastUpdateTime = Date.now();
+        }
       }
     }
 
@@ -113,6 +134,7 @@ async function handleUserMessage({ event, client }) {
         .replace(/^[*]{3,}$/gm, '');
     }
 
+    // 最終的な回答を分割して投稿
     const answerText = formatForSlack(fullAnswer.trim() || "（AIから有効な回答を得られませんでした）");
     const messages = splitMessage(answerText);
 
