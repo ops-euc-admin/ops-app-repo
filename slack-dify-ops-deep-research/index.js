@@ -22,11 +22,6 @@ async function handleUserMessage({ event, client }) {
   const conversationKey = `${event.channel}-${event.thread_ts || event.ts}`;
 
   if (!userText) {
-    await client.chat.postMessage({
-      channel: event.channel,
-      text: "はい、なんでしょうか？ :wave:",
-      thread_ts: threadTs
-    });
     return;
   }
 
@@ -40,7 +35,30 @@ async function handleUserMessage({ event, client }) {
     thread_ts: threadTs
   });
 
+  let parentDeleted = false;
+  let parentCheckInterval = null;
+  // 親スレッドの削除チェック関数
+  async function checkParentDeleted() {
+    try {
+      const replies = await client.conversations.replies({
+        channel: event.channel,
+        ts: threadTs,
+        limit: 1
+      });
+      if (!replies.messages || replies.messages.length === 0) {
+        parentDeleted = true;
+        console.log(`[INFO] 親スレッド(${threadTs})が削除されたため投稿を停止します。`);
+      }
+    } catch (e) {
+      // APIエラー時は停止しない
+      console.warn('[WARN] 親スレッド削除チェックでエラー:', e);
+    }
+  }
+
   try {
+    // 30秒ごとに親スレッドの削除をチェック
+    parentCheckInterval = setInterval(checkParentDeleted, 30000);
+
     const response = await fetch("https://dify.app.uzabase.com/v1/chat-messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.DIFY_API_KEY}`},
@@ -58,6 +76,9 @@ async function handleUserMessage({ event, client }) {
     let fullAnswer = "";
     let newConversationId = "";
     for await (const chunk of response.body) {
+      if (parentDeleted) {
+        throw new Error('親スレッドが削除されたため投稿を中断します');
+      }
       const chunkStr = chunk.toString();
       const lines = chunkStr.split('\n').filter(line => line.startsWith('data: '));
       for (const line of lines) {
@@ -96,15 +117,18 @@ async function handleUserMessage({ event, client }) {
     const messages = splitMessage(answerText);
 
     // 1つ目は仮メッセージを上書き
-    await client.chat.update({
-      channel: event.channel,
-      ts: pending.ts,
-      text: messages[0],
-      thread_ts: threadTs
-    });
+    if (!parentDeleted) {
+      await client.chat.update({
+        channel: event.channel,
+        ts: pending.ts,
+        text: messages[0],
+        thread_ts: threadTs
+      });
+    }
 
     // 2つ目以降も必ず3900文字以内で投稿
     for (let i = 1; i < messages.length; i++) {
+      if (parentDeleted) break;
       await client.chat.postMessage({
         channel: event.channel,
         text: messages[i],
@@ -112,7 +136,9 @@ async function handleUserMessage({ event, client }) {
       });
     }
 
-    console.log(`[INFO] Difyからの回答をスレッド(${threadTs})に投稿しました。`);
+    if (!parentDeleted) {
+      console.log(`[INFO] Difyからの回答をスレッド(${threadTs})に投稿しました。`);
+    }
 
   } catch (error) {
     console.error('[ERROR] Dify連携処理中にエラーが発生しました:', error);
@@ -121,6 +147,8 @@ async function handleUserMessage({ event, client }) {
       text: "すみません、AIとの連携処理でエラーが発生しました！",
       thread_ts: threadTs
     });
+  } finally {
+    if (parentCheckInterval) clearInterval(parentCheckInterval);
   }
 }
 
