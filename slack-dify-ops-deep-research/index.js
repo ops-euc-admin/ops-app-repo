@@ -209,10 +209,34 @@ app.event('message', async ({ event, client }) => {
 });
 
 
-// Socket Modeの致命的エラー時に自動再起動できるように
-process.on('uncaughtException', (err) => {
-  console.error('[FATAL] 未処理例外:', err);
-  process.exit(1);
+// 接続が確立したとき
+app.receiver.client.on('connected', () => {
+  console.log('[INFO] socket-mode:SocketModeClient:0 正常にSlackに接続されました。');
+});
+
+// Slackとの接続が切れたとき
+app.receiver.client.on('disconnected', (event) => {
+  // event.reason には切断理由が入ります。
+  // 'server_explicit_disconnect' や 'link_disabled' など
+  console.error(`[WARN] Slackとの接続が切れました。理由: ${event.reason}`);
+  
+  // 致命的なエラー（例：トークン無効）でなければ、再接続を試みる
+  // 'link_disabled' はApp-Level Tokenが無効化された場合など、回復不能なエラー
+  if (event.reason === 'link_disabled') {
+    console.error('[FATAL] 回復不能なエラーのため、プロセスを終了します。Slackアプリの設定を確認してください。');
+    process.exit(1);
+    return;
+  }
+  
+  // 5秒後に再接続を試みる
+  console.log('[INFO] 5秒後に再接続を試みます...');
+  setTimeout(() => {
+    // app.start()で再接続を開始する
+    app.start().catch((err) => {
+      console.error('[FATAL] 再接続に失敗しました:', err);
+      process.exit(1); // 再接続にも失敗したら、プロセスを終了して外部ツールに再起動を委ねる
+    });
+  }, 5000); // 5000ミリ秒 = 5秒
 });
 
 (async () => {
@@ -224,3 +248,9 @@ process.on('uncaughtException', (err) => {
     process.exit(1);
   }
 })();
+
+// Socket Modeの致命的エラー時に自動再起動できるように
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] 未処理例外:', err);
+  process.exit(1);
+});
