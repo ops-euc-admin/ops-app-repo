@@ -88,7 +88,19 @@ app.event('app_mention', async ({ event, client }) => {
   }
 });
 
+
+// Socket Modeの致命的エラー時に自動再起動できるように
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] 未処理例外:', err);
+  process.exit(1);
+});
+
 (async () => {
-  await app.start();
-  console.log('⚡️ 本番用Dify連携ボットが起動しました！！');
+  try {
+    await app.start();
+    console.log('⚡️ 本番用Dify連携ボットが起動しました！！');
+  } catch (err) {
+    console.error('[FATAL] Slackアプリ起動時エラー:', err);
+    process.exit(1);
+  }
 })();
