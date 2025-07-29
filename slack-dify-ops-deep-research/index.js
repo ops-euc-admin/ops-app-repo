@@ -13,7 +13,7 @@ const app = new App({
 const conversationStore = {};
 
 // 共通の処理本体
-async function handleUserMessage({ event, client }) {
+async function callDifyChatApi({ event, client }) {
   // メッセージのテキストから、メンション部分を綺麗に取り除く（DMでは不要だが共通化）
   const userText = (event.text || '').replace(/<@U[0-9A-Z]+>\s*/, '').trim();
 
@@ -198,13 +198,13 @@ function splitMessage(text, maxBytes = 3900) {
 
 // メンションイベント
 app.event('app_mention', async ({ event, client }) => {
-  await handleUserMessage({ event, client });
+  await callDifyChatApi({ event, client });
 });
 
 // DMイベント
 app.event('message', async ({ event, client }) => {
   if (event.channel_type === 'im' && !event.bot_id) {
-    await handleUserMessage({ event, client });
+    await callDifyChatApi({ event, client });
   }
 });
 
