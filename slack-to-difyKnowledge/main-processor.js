@@ -68,11 +68,10 @@ if (require.main === module) {
         
         // 処理するチャンネルとナレッジベースIDのリスト (ハードコードされたもの)
         channelsToProcess = [
-
             // 新規作成の例
-            //{ channel_id: 'C07A5QD6Q02', name: 'corp-ops-rev3104', knowledge_base_id: 'c8914cc6-2c6c-42da-a8ac-19802be06fd2' },
+            { channel_id: 'C07A5QD6Q02', name: 'corp-ops-rev3104', knowledge_base_id: 'c8914cc6-2c6c-42da-a8ac-19802be06fd2' },
             // 更新の例 (document_id を追加)
-            { channel_id: 'C088N1G5M63', name: 'ub-minop', knowledge_base_id: 'cc7be45e-1f39-4f05-b3ed-29849125f1e5', document_id: 'e1e788dd-e93d-47a1-a4dc-d8e52fc816e3' },
+            { channel_id: 'C088N1G5M63', name: 'ub-minop', knowledge_base_id: 'cc7be45e-1f39-4f05-b3ed-29849125f1e5', document_id: 'YOUR_EXISTING_DOCUMENT_ID' },
             // ここに実際のスプレッドシートから取得したデータを設定する
         ];
     }
