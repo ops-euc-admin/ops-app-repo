@@ -1,0 +1,54 @@
+①管理者権限で、powershellを実行。"nssm install"を実行（編集する際には"nssm edit"）。以下の設定を行う
+②Windowsの検索で"services.msc"を入れて検索実行。対象アプリの状態を確認。
+
+
+■Ops Deep Research
+・Application
+C:\nvm4w\nodejs\node.exe
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-ops-deep-research
+index.js
+
+・Output
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-ops-deep-research\stderr.log
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-ops-deep-research\stdout.log
+
+・Restart
+1500msec
+
+■Operator ngrok
+・Application
+C:\Users\ops-euc-admin\release\ngrok.exe
+C:\Users\ops-euc-admin\release
+
+・Output
+C:\Users\ops-euc-admin\release\stderr.log
+C:\Users\ops-euc-admin\release\stdout.log
+
+・Restart
+1500msec
+
+■Operator
+・Application
+C:\nvm4w\nodejs\node.exe
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-operator
+app.js
+
+・Output
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-operator\stderr.log
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-operator\stdout.log
+
+・Restart
+1500msec
+
+■MSO Chatbot
+・Application
+C:\nvm4w\nodejs\node.exe
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-mso
+index.js
+
+・Output
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-mso\stdout.log
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-mso\stderr.log
+
+・Restart
+1500msec

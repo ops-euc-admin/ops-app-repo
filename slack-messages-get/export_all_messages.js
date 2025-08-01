@@ -111,7 +111,7 @@ async function fetchMessagesWithThreads(channelId) {
         .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
 
       const csvWriter = createObjectCsvWriter({
-        path: `all_slack_messages_${safeChannelName}.csv`,
+        path: `slack_${safeChannelName}.csv`,
         header: [
           { id: 'user', title: 'user' },
           { id: 'text', title: 'text' },
@@ -134,7 +134,7 @@ async function fetchMessagesWithThreads(channelId) {
       });
 
       await csvWriter.writeRecords(records);
-      console.log(`✅ CSV出力完了: all_slack_messages_${safeChannelName}.csv（${records.length}件）`);
+      console.log(`✅ CSV出力完了: slack_${safeChannelName}.csv（${records.length}件）`);
     }
   } catch (err) {
     console.error("❌ 取得エラー:", err.message);
