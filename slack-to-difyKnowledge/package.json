@@ -1,0 +1,20 @@
+{
+  "name": "dify-slack-automation",
+  "version": "1.0.0",
+  "description": "Automates Slack to Dify knowledge base integration.",
+  "main": "main-processor.js",
+  "scripts": {
+    "start": "node main-processor.js",
+    "slack-cli": "node slack-app.js",
+    "convert-cli": "node dify-converter.js",
+    "upload-cli": "node dify-uploader.js"
+  },
+  "dependencies": {
+    "axios": "^1.4.0",
+    "csv-parser": "^3.0.0",
+    "csv-stringify": "^6.4.0",
+    "dotenv": "^16.3.1",
+    "form-data": "^4.0.0",
+    "node-fetch": "^2.6.1"
+  }
+}
