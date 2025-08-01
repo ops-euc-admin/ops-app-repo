@@ -65,7 +65,7 @@ async function processCsvFile(inputFilePath) {
         const rowByteSize = Buffer.byteLength(rowString, 'utf8');
 
         if (currentByteSize + rowByteSize > MAX_BYTES_PER_FILE && currentRows.length > 0) {
-            const outputFilePath = `${baseFileName}_notion_ready_part${fileCount}.csv`;
+            const outputFilePath = `${baseFileName}_dify_ready_part${fileCount}.csv`;
             await writeCsvFile(outputFilePath, headers, currentRows);
             console.log(`Saved part ${fileCount} of ${inputFilePath} to ${outputFilePath}`);
 
@@ -79,7 +79,7 @@ async function processCsvFile(inputFilePath) {
     }
 
     if (currentRows.length > 0) {
-        const outputFilePath = `${baseFileName}_notion_ready_part${fileCount}.csv`;
+        const outputFilePath = `${baseFileName}_dify_ready_part${fileCount}.csv`;
         await writeCsvFile(outputFilePath, headers, currentRows);
         console.log(`Saved part ${fileCount} of ${inputFilePath} to ${outputFilePath}`);
     }
