@@ -7,13 +7,14 @@ const path = require('path');
 dotenv.config();
 
 /**
- * CSV文字列をDifyのナレッジベースにファイルとしてアップロードします。
+ * CSV文字列をDifyのナレッジベースにファイルとしてアップロード（新規作成または更新）します。
  * この関数は他のモジュールから呼び出されることを想定しています。
  * @param {string} csvString - アップロードするCSVデータ（文字列）
  * @param {string} knowledgeBaseId - アップロード先のDifyナレッジベースID (dataset_id)
  * @param {string} fileName - Dify上で表示されるファイル名（拡張子含む）
+ * @param {string} [documentId=null] - 更新対象のドキュメントID。指定しない場合は新規作成。
  */
-async function uploadCsvToDify(csvString, knowledgeBaseId, fileName) {
+async function uploadCsvToDify(csvString, knowledgeBaseId, fileName, documentId = null) {
     const DIFY_API_KEY = process.env.DIFY_API_KEY;
     const DIFY_BASE_URL = process.env.DIFY_API_URL || 'https://dify.app.uzabase.com'; 
 
@@ -24,17 +25,26 @@ async function uploadCsvToDify(csvString, knowledgeBaseId, fileName) {
         throw new Error('File name is required for Dify upload. It should include the extension (e.g., .csv).');
     }
 
-    // 新規ファイルアップロード用のAPIエンドポイントを構築
-    const apiUrl = `${DIFY_BASE_URL}/v1/datasets/${knowledgeBaseId}/document/create-by-file`; 
+    let apiUrl;
+    let actionType;
 
-    console.log(`Uploading file '${fileName}' to Dify knowledge base: ${knowledgeBaseId} via ${apiUrl}...`);
+    if (documentId) {
+        // 既存ドキュメントを更新する場合
+        apiUrl = `${DIFY_BASE_URL}/v1/datasets/${knowledgeBaseId}/documents/${documentId}/update-by-file`;
+        actionType = '更新';
+    } else {
+        // 新規ドキュメントを作成する場合
+        apiUrl = `${DIFY_BASE_URL}/v1/datasets/${knowledgeBaseId}/document/create-by-file`;
+        actionType = '新規作成';
+    }
+
+    console.log(`${actionType}ドキュメント '${fileName}' (ID: ${documentId || '新規'}) をDifyナレッジベース: ${knowledgeBaseId} へ ${apiUrl} 経由でアップロード中...`);
 
     const form = new FormData();
     
-    // curlサンプルに合わせて 'data' フィールドをJSON文字列として追加
-    // nameは'data'フィールドのJSON内ではなく、FormDataのトップレベルに追加する
+    // curlサンプルとチャンク設定のスクリーンショットに合わせて 'data' フィールドをJSON文字列として追加
     const dataPayload = {
-        // name: fileName, // 'name'は'data'フィールド内ではなく、トップレベルのFormDataに追加
+        name: fileName, // ドキュメント名
         indexing_technique: "high_quality",
         process_rule: {
             rules: {
@@ -43,17 +53,14 @@ async function uploadCsvToDify(csvString, knowledgeBaseId, fileName) {
                     { id: "remove_urls_emails", enabled: true }
                 ],
                 segmentation: {
-                    separator: "###", // スクリーンショットのチャンク識別子に合わせて調整
-                    max_tokens: 500   // スクリーンショットの最大チャンク長に合わせて調整
+                    separator: "\n\n", // スクリーンショットのチャンク識別子
+                    max_tokens: 1024   // スクリーンショットの最大チャンク長
                 }
             },
             mode: "custom" // process_rule.rules を指定する場合は mode: "custom"
         }
     };
     form.append('data', JSON.stringify(dataPayload), { contentType: 'text/plain' });
-
-    // ドキュメント名 (name) をFormDataのトップレベルに追加
-    form.append('name', fileName);
 
     // ファイル (file) をFormDataに追加
     form.append('file', Buffer.from(csvString, 'utf8'), {
@@ -77,15 +84,15 @@ async function uploadCsvToDify(csvString, knowledgeBaseId, fileName) {
 
         // レスポンス構造はcreate-by-textと同様の document オブジェクトを期待
         if (response.data && response.data.document && response.data.document.id) { 
-            console.log(`✅ Upload successful for '${fileName}'. Document ID: ${response.data.document.id}`);
+            console.log(`✅ アップロード成功: '${fileName}'. ドキュメントID: ${response.data.document.id}`);
             return response.data;
         } else {
-            console.error(`❌ Upload failed for '${fileName}'. Response:`, response.data);
-            throw new Error('Dify API upload failed: Unexpected response structure or status.');
+            console.error(`❌ アップロード失敗: '${fileName}'. レスポンス:`, response.data);
+            throw new Error('Dify APIアップロード失敗: 予期せぬレスポンス構造またはステータス。');
         }
 
     } catch (error) {
-        console.error(`❌ An error occurred during Dify upload for '${fileName}':`, error.response?.data || error.message);
+        console.error(`❌ Difyアップロード中にエラーが発生しました: '${fileName}':`, error.response?.data || error.message);
         throw error;
     }
 }
@@ -96,16 +103,19 @@ if (require.main === module) {
     const inputFilePath = process.argv[2];
     const knowledgeBaseId = process.argv[3];
     let fileName = process.argv[4]; // Difyにアップロードする際のドキュメント名（オプション）
+    const documentId = process.argv[5]; // 更新対象のドキュメントID（オプション）
 
     if (!inputFilePath || !knowledgeBaseId) {
-        console.log('Usage: node dify-uploader.js <input_csv_file.csv> <knowledge_base_id> [dify_document_name]');
-        console.log('Example: node dify-uploader.js dify_ready_part1.csv kb_abcdefgh "My Slack Data Doc.csv"');
+        console.log('使用法 (新規作成): node dify-uploader.js <input_csv_file.csv> <knowledge_base_id> [dify_document_name]');
+        console.log('使用法 (更新):   node dify-uploader.js <input_csv_file.csv> <knowledge_base_id> <dify_document_name> <document_id>');
+        console.log('例 (新規作成): node dify-uploader.js dify_ready_part1.csv kb_abcdefgh "My Slack Data Doc.csv"');
+        console.log('例 (更新):   node dify-uploader.js dify_ready_part1.csv kb_abcdefgh "My Updated Doc.csv" doc_1234567890');
         console.log('         (dify_document_nameが省略された場合、CSVファイル名が使用されます)');
         process.exit(1);
     }
 
     if (!fs.existsSync(inputFilePath)) {
-        console.error(`Error: File not found - ${inputFilePath}.`);
+        console.error(`エラー: ファイルが見つかりません - ${inputFilePath}。`);
         process.exit(1);
     }
 
@@ -120,11 +130,11 @@ if (require.main === module) {
                 console.log(`ドキュメント名が指定されていません。ファイル名 '${fileName}' を使用します。`);
             }
 
-            // Difyにアップロード
-            await uploadCsvToDify(csvString, knowledgeBaseId, fileName);
-            console.log(`✅ Successfully uploaded ${inputFilePath} to Dify.`);
+            // Difyにアップロードまたは更新
+            await uploadCsvToDify(csvString, knowledgeBaseId, fileName, documentId);
+            console.log(`✅ ${inputFilePath} のDifyへのアップロード/更新が成功しました。`);
         } catch (err) {
-            console.error(`❌ Failed to upload ${inputFilePath}: ${err.message}`);
+            console.error(`❌ ${inputFilePath} のアップロード/更新に失敗しました: ${err.message}`);
             process.exit(1);
         }
     }
