@@ -2,7 +2,7 @@ import 'dotenv/config';
 import pkg from '@slack/bolt';
 const { App } = pkg;
 import fetch from 'node-fetch';
-import { LogLevel } from '@slack/logger'; // LogLevelをインポート
+import { LogLevel } from '@slack/logger';
 
 // ファイルダウンロードとS3アップロードに必要なライブラリをインポート
 import axios from 'axios';
@@ -31,6 +31,23 @@ const app = new App({
 const conversationStore = {};
 
 /**
+ * Difyの回答テキストをSlackのBlock Kitの単一セクションブロックに変換する関数
+ * @param {string} textContent - Slackのmrkdwn形式で表示するテキスト内容
+ * @returns {Array<object>} Slackのblocks配列（単一のsectionブロックを含む）
+ */
+function convertDifyAnswerToSlackBlocks(textContent) {
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": textContent
+            }
+        }
+    ];
+}
+
+/**
  * DifyチャットAPIを呼び出し、Slackに回答を投稿する共通処理
  * @param {object} params - パラメータオブジェクト
  * @param {object} params.event - Slackイベントオブジェクト
@@ -56,7 +73,7 @@ async function callDifyChatApi({ event, client, overrideText }) {
     // 仮メッセージを投稿
     const pending = await client.chat.postMessage({
         channel: event.channel,
-        text: "回答準備中です。少々お待ちください。",
+        text: "回答準備中です。少々お待ちください。", // Fallback text for notifications
         thread_ts: threadTs
     });
 
@@ -137,10 +154,12 @@ async function callDifyChatApi({ event, client, overrideText }) {
                     const answerText = formatForSlack(fullAnswer.trim());
                     const messages = splitMessage(answerText);
                     if (messages[0] !== lastUpdateText) {
+                        const blocksToUpdate = convertDifyAnswerToSlackBlocks(messages[0]); // Block Kitに変換
                         await client.chat.update({
                             channel: event.channel,
                             ts: pending.ts,
-                            text: messages[0],
+                            text: messages[0], // Fallback text for notifications
+                            blocks: blocksToUpdate, // Block Kitを使用
                             thread_ts: threadTs
                         });
                         lastUpdateText = messages[0];
@@ -161,10 +180,19 @@ async function callDifyChatApi({ event, client, overrideText }) {
 
         // 1つ目は仮メッセージを上書き
         if (!parentDeleted) {
+            const finalBlocksForFirstPart = convertDifyAnswerToSlackBlocks(messages[0]);
+            // 最後のメッセージ部分にのみ区切り線と追加の質問ブロックを追加
+            if (messages.length === 1) {
+                finalBlocksForFirstPart.push(
+                    { "type": "divider" }
+                );
+            }
+
             await client.chat.update({
                 channel: event.channel,
                 ts: pending.ts,
-                text: messages[0],
+                text: messages[0], // Fallback text for notifications
+                blocks: finalBlocksForFirstPart, // Block Kitを使用
                 thread_ts: threadTs
             });
         }
@@ -172,9 +200,18 @@ async function callDifyChatApi({ event, client, overrideText }) {
         // 2つ目以降も必ず3900文字以内で投稿
         for (let i = 1; i < messages.length; i++) {
             if (parentDeleted) break;
+            const blocksForSubsequentPart = convertDifyAnswerToSlackBlocks(messages[i]);
+            const currentBlocks = [...blocksForSubsequentPart];
+            // 最後のメッセージ部分にのみ区切り線と追加の質問ブロックを追加
+            if (i === messages.length - 1) {
+                currentBlocks.push(
+                    { "type": "divider" }
+                );
+            }
             await client.chat.postMessage({
                 channel: event.channel,
-                text: messages[i],
+                text: messages[i], // Fallback text for notifications
+                blocks: currentBlocks, // Block Kitを使用
                 thread_ts: threadTs
             });
         }
