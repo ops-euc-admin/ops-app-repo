@@ -10,10 +10,10 @@
 # PowerShellスクリプト: WindowsでのエラーをSlackに通知する
     
 # --- 設定項目 ---
-$webhookUrl = "https://hooks.slack.com/services/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" # 取得したWebhook URL
+$webhookUrl = "https://hooks.slack.com/services/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" # 取得したWebhook URL
 $message = @{
-    "text" = "【:warning: 警告】Windowsでエラーが発生しました。サーバーのイベントビューアーを確認してください。"
-    "username" = "Windows監視Bot"
+    "text" = "【:warning: 警告】AI/EUCサーバーでエラーが発生しました。サーバーのイベントビューアーを確認してください。"
+    "username" = "AI/EUCサーバー"
     "icon_emoji" = ":robot_face:"
 } | ConvertTo-Json
 
