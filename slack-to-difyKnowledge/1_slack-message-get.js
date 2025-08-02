@@ -122,7 +122,8 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
     try {
         // nameが指定されていない場合、Slack APIからチャンネル名を取得して代替
         const channelName = await getChannelName(channelId);
-        const safeName = (name || channelName).replace(/[^a-zA-Z0-9_-]/g, '_');
+        // 日本語文字 (ひらがな、カタカナ、漢字) を含むように正規表現を修正
+        const safeName = (name || channelName).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
         const sourceLabel = `Slack #${channelName}`;
 
         const allMessages = await fetchMessagesWithThreads(channelId);
