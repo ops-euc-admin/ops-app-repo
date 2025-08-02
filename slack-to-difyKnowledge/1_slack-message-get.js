@@ -150,7 +150,8 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
         return { csvString, safeName };
 
     } catch (err) {
-        console.error("❌ 取得エラー:", err.message);
+        // エラー発生時にチャネルIDを出力
+        console.error(`❌ 取得エラー (チャンネルID: ${channelId}):`, err.message);
         throw err;
     }
 }
@@ -175,7 +176,8 @@ if (require.main === module) {
             console.log(`✅ CSV出力完了: ${filePath}`);
         })
         .catch(err => {
-            console.error(`❌ エラー: ${err.message}`);
+            // コマンドライン実行時のエラーハンドリングでもチャネルIDを出力
+            console.error(`❌ エラー (チャンネルID: ${channelId}): ${err.message}`);
             process.exit(1);
         });
 }

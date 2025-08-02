@@ -1,3 +1,4 @@
+const { getSlackChannelTargetFromNotion } = require('./0_notion-to-slack-list');
 const { getSlackPostsAndConvertToCsv } = require('./1_slack-message-get');
 const { convertToDifyReadyCsv } = require('./2_dify-converter');
 const { uploadCsvToDify } = require('./3_dify-uploader');
@@ -52,14 +53,14 @@ async function processChannels(channels) {
 // スクリプトが直接 'node main-processor.js' のように実行された場合にのみこのブロックが動作します。
 if (require.main === module) {
     // コマンドライン引数を解析
-    // node main-processor.js <channels_csv_file_path>
+    // node main-processor.js [channels_csv_file_path]
     const channelsCsvFilePath = process.argv[2];
 
     async function main() {
         let channelsToProcess = [];
 
         if (channelsCsvFilePath) {
-            // CSVファイルからチャンネル情報を読み込む
+            // CSVファイルパスが指定された場合、CSVファイルからチャンネル情報を読み込む
             console.log(`CSVファイル '${channelsCsvFilePath}' からチャンネル情報を読み込みます。`);
             if (!fs.existsSync(channelsCsvFilePath)) {
                 console.error(`エラー: 指定されたCSVファイルが見つかりません - ${channelsCsvFilePath}。`);
@@ -95,16 +96,19 @@ if (require.main === module) {
                 process.exit(1);
             }
         } else {
-            // CSVファイルパスが指定されていない場合、ハードコードされたリストを使用
-            console.log('CSVファイルパスが指定されていないため、ハードコードされたチャンネル情報を使用します。');
-            console.log('使用法: node main-processor.js <channels_csv_file_path>');
+            // CSVファイルパスが指定されていない場合、Notionからチャンネル情報を取得
+            console.log('CSVファイルパスが指定されていないため、Notionからチャンネル情報を取得します。');
+            console.log('使用法: node main-processor.js [channels_csv_file_path]');
             
-            // 処理するチャンネルとナレッジベースIDのリスト (ハードコードされたもの)
-            channelsToProcess = [
-                { channel_id: 'C07A5QD6Q02', name: 'corp-ops-rev3104', knowledge_base_id: 'c8914cc6-2c6c-42da-a8ac-19802be06fd2' },
-                { channel_id: 'C088N1G5M63', name: 'ub-minop', knowledge_base_id: 'cc7be45e-1f39-4f05-b3ed-29849125f1e5', document_id: 'YOUR_EXISTING_DOCUMENT_ID' },
-                // ここに実際のスプレッドシートから取得したデータを設定する
-            ];
+            try {
+                // Notionからチャンネル情報を取得する関数を呼び出す
+                // getSlackChannelTargetFromNotion は、channelsToProcess と同じ形式の配列を返すと想定
+                channelsToProcess = await getSlackChannelTargetFromNotion();
+                console.log(`Notionから ${channelsToProcess.length} 件のチャンネル情報を取得しました。`);
+            } catch (err) {
+                console.error(`❌ Notionからのチャンネル情報取得に失敗しました: ${err.message}`);
+                process.exit(1); // 取得失敗時は処理を終了
+            }
         }
 
         // 処理を開始
