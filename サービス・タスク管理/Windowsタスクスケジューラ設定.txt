@@ -1,0 +1,30 @@
+Windows タスクスケジューラで以下を設定
+
+■ Slack to Dify Knowledge
+・場所
+タスクスケジューラライブラリ/EUC
+
+・トリガー
+毎週
+金曜
+20:00
+
+・操作
+プログラムの開始
+プラグラム：　C:\nvm4w\nodejs\node.exe
+引数の追加：　C:\Users\ops-euc-admin\release\ops-app-repo\slack-to-difyKnowledge
+開始：　main-processor.js
+
+
+■Error Notice_201,101,103
+・場所
+タスクスケジューラライブラリ/EUC
+
+・トリガー
+イベント発生（201）：アプリケーションが実行されたが、エラーコードで終了した。
+イベント発生（101）：タスクの開始に失敗した（資格情報のエラーなど）。
+イベント発生（103）：タスクの実行がユーザーによって要求されたが、起動できなかった。
+
+・操作
+プログラムの開始
+プラグラム：　サービス・タスク管理/error_notice_slack.ps1
