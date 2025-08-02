@@ -4,6 +4,7 @@ const fs = require("fs");
 require("dotenv").config();
 
 // 環境変数からNotion APIキーとデータベースIDを取得
+// NOTION_TOKENではなくNOTION_API_KEYを使用します（以前のimmersiveと合わせるため）
 const NOTION_API_KEY = process.env.NOTION_API_KEY; 
 const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID;
 
@@ -20,7 +21,7 @@ const notion = new Client({ auth: NOTION_API_KEY });
 
 /**
  * NotionデータベースからSlackチャンネルのターゲット情報を取得します。
- * 「ナレッジ種別」が「slack」のデータのみをフィルタリングします。
+ * 取得するデータは、main-processor.jsが期待する形式（channel_id, name, knowledge_base_id, document_id）に変換されます。
  * @returns {Promise<Array<Object>>} チャンネル情報の配列
  */
 async function getSlackChannelTargetFromNotion() {
@@ -30,13 +31,14 @@ async function getSlackChannelTargetFromNotion() {
     try {
         const response = await notion.databases.query({
             database_id: NOTION_DATABASE_ID,
-            // 「ナレッジ種別」プロパティが「slack」であるものをフィルタリング
-            filter: {
-                property: 'ナレッジ種別',
-                select: {
-                    equals: 'slack'
-                }
-            }
+            // Notionデータベースのプロパティ名に合わせて調整してください
+            // 例: 'ステータス' が '開始' の行のみをフィルタリングする場合
+            // filter: {
+            //     property: 'ステータス',
+            //     select: {
+            //         equals: '開始'
+            //     }
+            // }
         });
 
         for (const page of response.results) {

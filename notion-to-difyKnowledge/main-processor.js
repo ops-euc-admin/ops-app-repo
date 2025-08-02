@@ -1,6 +1,6 @@
-const { getSlackChannelTargetFromNotion } = require('./0_notion-to-slack-list');
-const { getSlackPostsAndConvertToCsv } = require('./1_slack-message-get');
-const { convertToDifyReadyCsv } = require('./2_slack-to-dify-converter');
+const { getSlackChannelTargetFromNotion } = require('./0_notion-to-notion-list');
+const { getSlackPostsAndConvertToCsv } = require('./1_notion-get');
+const { convertToDifyReadyCsv } = require('./2_notion-to-dify-converter');
 const { uploadCsvToDify } = require('./3_dify-uploader');
 const fs = require('fs'); // CSVファイル読み込みのため追加
 const csv = require('csv-parser'); // CSVパースのため追加
