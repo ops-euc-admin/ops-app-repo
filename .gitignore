@@ -33,3 +33,4 @@ out/
 # Git�Ǘ��Ɋ܂߂�����O
 !.env.example
 package-lock.json
+サービス・タスク管理/error_notice_slack.ps1
