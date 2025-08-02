@@ -1,54 +1,48 @@
-‡@ŠÇ—ÒŒ ŒÀ‚ÅApowershell‚ğÀsB"nssm install"‚ğÀsi•ÒW‚·‚éÛ‚É‚Í"nssm edit"jBˆÈ‰º‚Ìİ’è‚ğs‚¤
-‡AWindows‚ÌŒŸõ‚Å"services.msc"‚ğ“ü‚ê‚ÄŒŸõÀsB‘ÎÛƒAƒvƒŠ‚Ìó‘Ô‚ğŠm”FB
+ï»¿1. â‘ ç®¡ç†è€…æ¨©é™ã§ã€powershellã‚’å®Ÿè¡Œã€‚"nssm install"ã‚’å®Ÿè¡Œï¼ˆç·¨é›†ã™ã‚‹éš›ã«ã¯"nssm edit"ï¼‰ã€‚ä»¥ä¸‹ã®è¨­å®šã‚’è¡Œã†
+2. Windowsã®æ¤œç´¢ã§"services.msc"ã‚’å…¥ã‚Œã¦æ¤œç´¢å®Ÿè¡Œã€‚å¯¾è±¡ã‚¢ãƒ—ãƒªã®çŠ¶æ…‹ã‚’ç¢ºèªã€‚
 
+ãƒ»Output
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-to-difyKnowledge\stdout.log
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-to-difyKnowledge\stderr.log
 
-¡Ops Deep Research
-EApplication
+ãƒ»Restart
+1500msec
+
+â–  Ops Deep Research
+ãƒ»Application
 C:\nvm4w\nodejs\node.exe
 C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-ops-deep-research
 index.js
 
-EOutput
-C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-ops-deep-research\stderr.log
+ãƒ»Output
 C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-ops-deep-research\stdout.log
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-ops-deep-research\stderr.log
 
-ERestart
+ãƒ»Restart
 1500msec
 
-¡Operator ngrok
-EApplication
-C:\Users\ops-euc-admin\release\ngrok.exe
-C:\Users\ops-euc-admin\release
-
-EOutput
-C:\Users\ops-euc-admin\release\stderr.log
-C:\Users\ops-euc-admin\release\stdout.log
-
-ERestart
-1500msec
-
-¡Operator
-EApplication
+â–  Operator
+ãƒ»Application
 C:\nvm4w\nodejs\node.exe
 C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-operator
 app.js
 
-EOutput
-C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-operator\stderr.log
+ãƒ»Output
 C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-operator\stdout.log
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-operator\stderr.log
 
-ERestart
+ãƒ»Restart
 1500msec
 
-¡MSO Chatbot
-EApplication
+â–  MSO Chatbot
+ãƒ»Application
 C:\nvm4w\nodejs\node.exe
 C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-mso
 index.js
 
-EOutput
-C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-mso\stdout.log
+ãƒ»Output
 C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-mso\stderr.log
+C:\Users\ops-euc-admin\release\ops-app-repo\slack-dify-mso\stdout.log
 
-ERestart
+ãƒ»Restart
 1500msec
