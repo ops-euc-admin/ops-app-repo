@@ -10,7 +10,7 @@ dotenv.config();
  * Dify APIの基本URL
  * .envにDIFY_API_URLが設定されていなければ、提供されたURLをデフォルトとする
  */
-const DIFY_BASE_URL = process.env.DIFY_API_URL || 'https://dify.app.uzabase.com'; 
+const DIFY_BASE_URL = process.env.DIFY_API_URL; 
 const DIFY_API_KEY = process.env.DIFY_API_KEY;
 
 if (!DIFY_API_KEY) {
