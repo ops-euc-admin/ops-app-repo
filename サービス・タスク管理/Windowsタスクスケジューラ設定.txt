@@ -15,6 +15,34 @@ Windows タスクスケジューラで以下を設定
 引数の追加：　C:\Users\ops-euc-admin\release\ops-app-repo\slack-to-difyKnowledge
 開始：　main-processor.js
 
+■ NotionDB to Dify Knowledge
+・場所
+タスクスケジューラライブラリ/EUC
+
+・トリガー
+毎日
+20:00
+
+・操作
+プログラムの開始
+プラグラム：　C:\nvm4w\nodejs\node.exe
+引数の追加：　main-processor.js
+開始：　C:\Users\ops-euc-admin\release\ops-app-repo\notionDB-to-difyKnowledge
+
+■ NotionPage to Dify Knowledge
+・場所
+タスクスケジューラライブラリ/EUC
+
+・トリガー
+毎日
+20:00
+
+・操作
+プログラムの開始
+プラグラム：　C:\nvm4w\nodejs\node.exe
+引数の追加：　main-processor.js
+開始：　C:\Users\ops-euc-admin\release\ops-app-repo\notionPage-to-difyKnowledge
+
 
 ■Error Notice_201,101,103
 ・場所
