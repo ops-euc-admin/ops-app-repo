@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
 const dotenv = require('dotenv');
-const fs = require('fs'); // ファイルI/Oのために追加
+const fs = require('fs');
+const { stringify } = require('csv-stringify/sync');
 
 dotenv.config();
 
@@ -14,10 +15,6 @@ const headers = {
 
 /**
  * Slack APIへのリクエストをレート制限を考慮して実行します。
- * @param {string} url - リクエストURL
- * @param {Object} options - fetchオプション
- * @param {string} label - ログ出力用のラベル
- * @returns {Promise<Response>} fetchのレスポンス
  */
 async function fetchWithRateLimitRetry(url, options, label = '') {
     let attempt = 0;
@@ -36,9 +33,26 @@ async function fetchWithRateLimitRetry(url, options, label = '') {
 }
 
 /**
+ * 指定されたメッセージのパーマリンクを取得します。
+ */
+async function getPermalink(channelId, messageTs) {
+    const params = new URLSearchParams({
+        channel: channelId,
+        message_ts: messageTs
+    });
+    const url = `https://slack.com/api/chat.getPermalink?${params.toString()}`;
+    const res = await fetchWithRateLimitRetry(url, { method: 'GET', headers }, `permalink:${channelId}`);
+    const data = await res.json();
+    if (!data.ok) {
+        console.warn(`パーマリンクの取得に失敗 (ts: ${messageTs}, channel: ${channelId}). Error: ${data.error}`);
+        return ''; // エラー時も処理を続行するため空文字を返す
+    }
+    return data.permalink;
+}
+
+
+/**
  * 指定されたチャンネルのSlackチャンネル名を取得します。
- * @param {string} channelId - SlackチャンネルID
- * @returns {Promise<string>} チャンネル名
  */
 async function getChannelName(channelId) {
     const res = await fetchWithRateLimitRetry(
@@ -53,22 +67,20 @@ async function getChannelName(channelId) {
 
 /**
  * 指定されたスレッドの返信メッセージを取得します。
- * @param {string} channelId - SlackチャンネルID
- * @param {string} threadTs - スレッドのタイムスタンプ
- * @returns {Promise<Array<Object>>} スレッド返信メッセージの配列
  */
 async function fetchThreadReplies(channelId, threadTs) {
-    const url = `https://slack.com/api/conversations.replies?channel=${channelId}&ts=${threadTs}&limit=20`;
+    const url = `https://slack.com/api/conversations.replies?channel=${channelId}&ts=${threadTs}&limit=200`;
     const res = await fetchWithRateLimitRetry(url, { method: 'GET', headers }, `replies:${channelId}`);
     const data = await res.json();
-    if (!data.ok) throw new Error(`Slack API error (replies): ${data.error}`);
-    return data.messages || [];
+    if (!data.ok) {
+        console.warn(`スレッドの返信取得に失敗しました (ts: ${threadTs}, channel: ${channelId}). Error: ${data.error}`);
+        return [];
+    }
+    return Array.isArray(data.messages) ? data.messages : [];
 }
 
 /**
  * 指定されたチャンネルからメッセージとスレッドの返信をすべて取得します。
- * @param {string} channelId - SlackチャンネルID
- * @returns {Promise<Array<Object>>} 取得したすべてのメッセージの配列
  */
 async function fetchMessagesWithThreads(channelId) {
     let hasMore = true;
@@ -84,18 +96,20 @@ async function fetchMessagesWithThreads(channelId) {
         const data = await res.json();
         if (!data.ok) throw new Error(`Slack API error (history): ${data.error}`);
 
-        for (const msg of data.messages) {
-            if (
-                INCLUDE_THREADS &&
-                msg.thread_ts &&
-                msg.thread_ts === msg.ts
-            ) {
-                const replies = await fetchThreadReplies(channelId, msg.thread_ts);
-                allMessages.push(msg);
-                allMessages.push(...replies.filter(r => r.ts !== msg.ts));
-            }
-            else if (!msg.thread_ts) {
-                allMessages.push(msg);
+        if (Array.isArray(data.messages)) {
+            for (const msg of data.messages) {
+                if (
+                    INCLUDE_THREADS &&
+                    msg.thread_ts &&
+                    msg.thread_ts === msg.ts
+                ) {
+                    const replies = await fetchThreadReplies(channelId, msg.thread_ts);
+                    allMessages.push(msg);
+                    allMessages.push(...replies.filter(r => r.ts !== msg.ts));
+                }
+                else if (!msg.thread_ts) {
+                    allMessages.push(msg);
+                }
             }
         }
 
@@ -109,10 +123,6 @@ async function fetchMessagesWithThreads(channelId) {
 
 /**
  * 指定されたSlackチャンネルから投稿を取得し、CSV形式の文字列を返します。
- * この関数は他のモジュールから呼び出されることを想定しています。
- * @param {string} channelId - SlackチャンネルID
- * @param {string} [name] - 保存名（省略可能）。ファイル名の一部として使用される。
- * @returns {Promise<{csvString: string, safeName: string}>} 生成されたCSV文字列と安全なファイル名
  */
 async function getSlackPostsAndConvertToCsv(channelId, name) {
     if (!channelId) {
@@ -120,13 +130,19 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
     }
 
     try {
-        // nameが指定されていない場合、Slack APIからチャンネル名を取得して代替
         const channelName = await getChannelName(channelId);
-        // 日本語文字 (ひらがな、カタカナ、漢字) を含むように正規表現を修正
         const safeName = (name || channelName).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
         const sourceLabel = `Slack #${channelName}`;
 
         const allMessages = await fetchMessagesWithThreads(channelId);
+
+        // スレッドのURLを事前に一括取得
+        const threadTss = [...new Set(allMessages.map(msg => msg.thread_ts).filter(Boolean))];
+        const permalinkPromises = threadTss.map(ts => getPermalink(channelId, ts));
+        const permalinks = await Promise.all(permalinkPromises);
+        const threadUrlMap = new Map(threadTss.map((ts, i) => [ts, permalinks[i]]));
+
+
         const userMessages = allMessages
             .filter(msg => msg.text)
             .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
@@ -134,55 +150,53 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
         const records = userMessages.map((msg) => {
             const cleanText = msg.text.replace(/\n/g, ' ').trim();
             const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
+            const threadUrl = msg.thread_ts ? threadUrlMap.get(msg.thread_ts) || '' : '';
+
             return {
                 user: msg.user || '',
                 text: cleanText,
                 ts: msg.ts,
                 thread_ts: threadId,
+                thread_url: threadUrl,
                 source: sourceLabel
             };
         });
 
-        const csvHeader = 'user,text,timestamp,thread_ts,source';
-        const csvRecords = records.map(record => `${record.user},"${record.text}",${record.ts},${record.thread_ts},"${record.source}"`);
-        const csvString = [csvHeader, ...csvRecords].join('\n');
+        const csvString = stringify(records, {
+            header: true,
+            columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source']
+        });
         
         return { csvString, safeName };
 
     } catch (err) {
-        // エラー発生時にチャネルIDを出力
         console.error(`❌ 取得エラー (チャンネルID: ${channelId}):`, err.message);
         throw err;
     }
 }
 
 // --- コマンドラインからの独立実行用の部分 ---
-// スクリプトが直接 'node slack-app.js' のように実行された場合にのみこのブロックが動作します。
 if (require.main === module) {
     const channelId = process.argv[2];
-    const name = process.argv[3]; // オプションの保存名
+    const name = process.argv[3];
     
     if (!channelId) {
-        console.error("❌ チャンネルIDを引数で指定してください。例: node slack-app.js C1234567890 \"general-channel\"");
+        console.error("❌ チャンネルIDを引数で指定してください。例: node 1_slack-message-get.js C1234567890 \"general-channel\"");
         process.exit(1);
     }
     
-    // getSlackPostsAndConvertToCsv 関数を呼び出し
     getSlackPostsAndConvertToCsv(channelId, name)
         .then(({ csvString, safeName }) => {
-            // CSV文字列をファイルに書き出す
             const filePath = `slack_${safeName}.csv`;
             fs.writeFileSync(filePath, csvString);
             console.log(`✅ CSV出力完了: ${filePath}`);
         })
         .catch(err => {
-            // コマンドライン実行時のエラーハンドリングでもチャネルIDを出力
             console.error(`❌ エラー (チャンネルID: ${channelId}): ${err.message}`);
             process.exit(1);
         });
 }
 
-// 他のファイルから require で呼び出せるように関数を公開
 module.exports = {
     getSlackPostsAndConvertToCsv
 };
