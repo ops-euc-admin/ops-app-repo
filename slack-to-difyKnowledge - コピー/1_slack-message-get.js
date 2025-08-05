@@ -57,7 +57,7 @@ async function fetchThreadReplies(channelId, threadTs) {
 }
 
 /**
- * 指定されたチャンネルからメッセージとスレッドの返信をすべて取得します。
+ * 指定されたチャンネルからメッセージとスレッドの返信をすべて取得します。(アダプティブ・ディレイ版)
  */
 async function fetchMessagesWithThreads(channelId) {
     console.log(`[1/3] チャンネル履歴の取得を開始します (チャンネルID: ${channelId})`);
@@ -141,6 +141,7 @@ async function fetchMessagesWithThreads(channelId) {
  * 指定されたSlackチャンネルから投稿を取得し、CSV形式の文字列を返します。
  */
 async function getSlackPostsAndConvertToCsv(channelId, name) {
+    // (トークン選択ロジックは変更なし)
     if (!channelId) { throw new Error("チャンネルIDが指定されていません。"); }
     if (!SLACK_BOT_TOKEN && !SLACK_USER_TOKEN) { throw new Error(".envファイルにSLACK_BOT_TOKENまたはSLACK_USER_TOKENを設定してください。"); }
     let channelName;
@@ -180,7 +181,7 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
         const threadUrlMap = new Map();
 
         if (threadTss.length > 0) {
-            const limit = pLimit(3);
+            const limit = pLimit(1);
             // ★★★ APIのレート（Tier 3: 50回/分）に基づき、最低1.2秒の間隔を設ける ★★★
             const MIN_INTERVAL = 1200; // 1200ミリ秒 = 1.2秒
 
@@ -218,27 +219,15 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
             console.log("✅ パーマリンクの取得が完了しました。");
         }
         
+        // (CSV生成ロジックは変更なし)
         const userMessages = allMessages.filter(msg => msg.text).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
         const records = userMessages.map((msg) => {
             const cleanText = msg.text.replace(/\n/g, ' ').trim();
             const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
             const threadUrl = msg.thread_ts ? threadUrlMap.get(msg.thread_ts) || '' : '';
-
-            return {
-                user: msg.user || '',
-                text: cleanText,
-                ts: msg.ts,
-                thread_ts: threadId,
-                thread_url: threadUrl,
-                source: sourceLabel
-            };
+            return { user: msg.user || '', text: cleanText, ts: msg.ts, thread_ts: threadId, thread_url: threadUrl, source: sourceLabel };
         });
-
-        const csvString = stringify(records, {
-            header: true,
-            columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source']
-        });
-
+        const csvString = stringify(records, { header: true, columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source'] });
         return { csvString, safeName };
 
     } catch (err) {
@@ -247,6 +236,7 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
     }
 }
 
+// (コマンドライン実行部分は変更なし)
 if (require.main === module) {
     const channelId = process.argv[2];
     const name = process.argv[3];
