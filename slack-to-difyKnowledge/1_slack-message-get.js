@@ -33,9 +33,9 @@ async function fetchWithRateLimitRetry(url, options, label = '') {
 }
 
 /**
- * 指定されたSlackチャンネル名を取得します。
+ * 指定されたSlackチャンネル情報を取得します。
  */
-async function getChannelName(channelId) {
+async function getChannelInfo(channelId) {
     const res = await fetchWithRateLimitRetry(
         `https://slack.com/api/conversations.info?channel=${channelId}`,
         { method: 'GET', headers },
@@ -43,24 +43,68 @@ async function getChannelName(channelId) {
     );
     const data = await res.json();
     if (!data.ok) throw new Error(`Slack API error (channel info): ${data.error}`);
-    return data.channel.name;
+    return data.channel;
 }
 
 /**
- * 指定されたスレッドの返信メッセージを取得します。
+ * Promiseをチャンクごとに実行し、並列数を制限します。
  */
-async function fetchThreadReplies(channelId, threadTs) {
-    const url = `https://slack.com/api/conversations.replies?channel=${channelId}&ts=${threadTs}&limit=200`;
-    const res = await fetchWithRateLimitRetry(url, { method: 'GET', headers }, `replies:${channelId}`);
-    const data = await res.json();
-    if (!data.ok) {
-        console.warn(`スレッドの返信取得に失敗しました (ts: ${threadTs}, channel: ${channelId}). Error: ${data.error}`);
-        return [];
-    }
-    // スレッドの親メッセージを除外
-    const replies = Array.isArray(data.messages) ? data.messages.slice(1) : [];
-    return replies;
+async function runWithConcurrencyLimit(promises, limit) {
+    const results = [];
+    const running = [];
+    let index = 0;
+
+    const runNext = async () => {
+        if (index >= promises.length) {
+            return;
+        }
+        const currentPromise = promises[index];
+        index++;
+        
+        const promise = currentPromise();
+        running.push(promise);
+        
+        await promise.then(result => {
+            results.push(result);
+            running.splice(running.indexOf(promise), 1);
+        });
+        
+        await runNext();
+    };
+
+    const initialPromises = promises.slice(0, limit).map((_, i) => runNext());
+    await Promise.all(initialPromises);
+    
+    return results;
 }
+
+/**
+ * 指定されたスレッドの返信メッセージを並列取得します。
+ */
+async function fetchThreadRepliesConcurrently(channelId, parentMessages) {
+    const requestFns = parentMessages.map(msg => async () => {
+        const url = `https://slack.com/api/conversations.replies?channel=${channelId}&ts=${msg.thread_ts}&limit=200`;
+        const res = await fetchWithRateLimitRetry(url, { method: 'GET', headers }, `replies:${channelId}`);
+        const data = await res.json();
+        if (!data.ok) {
+            console.warn(`スレッドの返信取得に失敗しました (ts: ${msg.thread_ts}, channel: ${channelId}). Error: ${data.error}`);
+            return { ok: false, messages: [] };
+        }
+        return data;
+    });
+
+    // 並列実行数を5に制限
+    const threadResponses = await runWithConcurrencyLimit(requestFns, 5);
+
+    const allReplies = threadResponses.flatMap(data => {
+        if (!data.ok) return [];
+        // スレッドの親メッセージを除外
+        return Array.isArray(data.messages) ? data.messages.slice(1) : [];
+    });
+    
+    return allReplies;
+}
+
 
 /**
  * 指定されたチャンネルからメッセージとスレッドの返信をすべて取得します。
@@ -69,6 +113,7 @@ async function fetchMessagesWithThreads(channelId) {
     let hasMore = true;
     let cursor = null;
     const allMessages = [];
+    const parentMessages = [];
 
     while (hasMore) {
         const params = new URLSearchParams({ channel: channelId, limit: '200' });
@@ -78,15 +123,12 @@ async function fetchMessagesWithThreads(channelId) {
         const res = await fetchWithRateLimitRetry(url, { method: 'GET', headers }, `history:${channelId}`);
         const data = await res.json();
         if (!data.ok) throw new Error(`Slack API error (history): ${data.error}`);
-        
+
         if (Array.isArray(data.messages)) {
             for (const msg of data.messages) {
-                // スレッドの親メッセージのみを対象とし、スレッド返信のメッセージは別途取得
-                if (INCLUDE_THREADS && msg.thread_ts === msg.ts) {
-                    const replies = await fetchThreadReplies(channelId, msg.thread_ts);
-                    allMessages.push(msg);
-                    allMessages.push(...replies);
-                } else if (!msg.thread_ts) {
+                if (msg.thread_ts && msg.thread_ts === msg.ts) {
+                    parentMessages.push(msg);
+                } else {
                     allMessages.push(msg);
                 }
             }
@@ -95,6 +137,13 @@ async function fetchMessagesWithThreads(channelId) {
         hasMore = data.has_more;
         cursor = data.response_metadata?.next_cursor;
         await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    
+    if (INCLUDE_THREADS && parentMessages.length > 0) {
+        const allReplies = await fetchThreadRepliesConcurrently(channelId, parentMessages);
+        allMessages.push(...parentMessages, ...allReplies);
+    } else {
+        allMessages.push(...parentMessages);
     }
 
     return allMessages;
@@ -109,17 +158,9 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
     }
 
     try {
-        const channelInfoRes = await fetchWithRateLimitRetry(
-            `https://slack.com/api/conversations.info?channel=${channelId}`,
-            { method: 'GET', headers },
-            'channel info'
-        );
-        const channelInfoData = await channelInfoRes.json();
-        if (!channelInfoData.ok) {
-            throw new Error(`Slack API error (conversations.info): ${channelInfoData.error}`);
-        }
-        const teamId = channelInfoData.channel.team_id;
-        const channelName = channelInfoData.channel.name;
+        const channelInfo = await getChannelInfo(channelId);
+        const teamId = channelInfo.team_id;
+        const channelName = channelInfo.name;
         const safeName = (name || channelName).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
         const sourceLabel = `Slack #${channelName}`;
 
@@ -135,7 +176,6 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
             const threadId = msg.thread_ts;
             const isReply = msg.thread_ts && msg.thread_ts !== msg.ts;
             
-            // permalinkをボットトークンで生成
             const threadTsForPermalink = isReply ? msg.thread_ts : msg.ts;
             const threadUrl = `https://${teamId}.slack.com/archives/${channelId}/p${threadTsForPermalink.replace('.', '')}`;
 
@@ -143,8 +183,8 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
                 user: msg.user || '',
                 text: cleanText,
                 ts: msg.ts,
-                thread_ts: isReply ? threadId : '', // スレッドの親メッセージには空欄
-                thread_url: isReply ? threadUrl : '', // スレッド返信にのみURLを設定
+                thread_ts: isReply ? threadId : '',
+                thread_url: isReply ? threadUrl : '',
                 source: sourceLabel
             };
         });
