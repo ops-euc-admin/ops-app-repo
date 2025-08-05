@@ -111,19 +111,31 @@ async function getContentRecursively(blockId, notion, visited, indent = '') {
                 const dbTitle = block.child_database.title || 'Untitled Database';
                 allTextBlocks.push(`\n${indent}--- Database: ${dbTitle} ---`);
                 
-                let dbHasMore = true;
-                let dbStartCursor = undefined;
-                while (dbHasMore) {
-                    const dbResponse = await notion.databases.query({ database_id: block.id, start_cursor: dbStartCursor });
-                    for (const page of dbResponse.results) {
-                        const pageTitleProp = Object.values(page.properties).find(prop => prop.type === 'title');
-                        const pageTitle = pageTitleProp?.title[0]?.plain_text || 'Untitled Page';
-                        allTextBlocks.push(`\n${indent}  --- DB Entry: ${pageTitle} ---`);
-                        const dbPageContent = await getContentRecursively(page.id, notion, visited, indent + '    ');
-                        allTextBlocks.push(dbPageContent);
+                try {
+                    let dbHasMore = true;
+                    let dbStartCursor = undefined;
+                    while (dbHasMore) {
+                        const dbResponse = await notion.databases.query({ database_id: block.id, start_cursor: dbStartCursor });
+                        for (const page of dbResponse.results) {
+                            const pageTitleProp = Object.values(page.properties).find(prop => prop.type === 'title');
+                            const pageTitle = pageTitleProp?.title[0]?.plain_text || 'Untitled Page';
+                            allTextBlocks.push(`\n${indent}   --- DB Entry: ${pageTitle} ---`);
+                            const dbPageContent = await getContentRecursively(page.id, notion, visited, indent + '     ');
+                            allTextBlocks.push(dbPageContent);
+                        }
+                        dbHasMore = dbResponse.has_more;
+                        dbStartCursor = dbResponse.next_cursor;
                     }
-                    dbHasMore = dbResponse.has_more;
-                    dbStartCursor = dbResponse.next_cursor;
+                } catch (error) {
+                    // object_not_foundエラーの場合は警告を出してスキップする
+                    if (error.code === 'object_not_found') {
+                        const warningMessage = `${indent}  [WARN] Database (ID: ${block.id}) could not be accessed and was skipped. It may be broken.`;
+                        allTextBlocks.push(warningMessage);
+                        console.warn(`⚠️ ${warningMessage}`);
+                    } else {
+                        // それ以外のエラーは、予期せぬ問題の可能性があるので処理を停止させる
+                        throw error;
+                    }
                 }
             } else if (blockText) {
                 allTextBlocks.push(indent + blockText);
