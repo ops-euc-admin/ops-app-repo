@@ -127,77 +127,103 @@ async function fetchMessagesWithThreads(channelId) {
 }
 
 /**
- * 指定されたSlackチャンネルから投稿を取得し、CSV形式の文字列を返します。
+ * 指定されたSlackチャンネルから投稿を取得し、CSVファイルとして保存します。
+ * @param {string} channelId チャンネルID
+ * @param {string} [name] ファイル名に使用する名前（オプション）
+ * @returns {Promise<string>} 保存されたCSVファイルのパス
  */
 async function getSlackPostsAndConvertToCsv(channelId, name) {
-    if (!channelId) { throw new Error("チャンネルIDが指定されていません。"); }
-    if (!SLACK_WORKSPACE_URL) { throw new Error(".envファイルにSLACK_WORKSPACE_URL（例: https://your-workspace.slack.com）を設定してください。"); }
-    if (!SLACK_BOT_TOKEN && !SLACK_USER_TOKEN) { throw new Error(".envファイルにSLACK_BOT_TOKENまたはSLACK_USER_TOKENを設定してください。"); }
-    
-    let channelName;
-    let isTokenSuccessful = false;
-    if (SLACK_BOT_TOKEN) {
-        headers = { Authorization: `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' };
-        try {
-            const checkUrl = `https://slack.com/api/conversations.history?channel=${channelId}&limit=1`;
-            const res = await fetchWithRateLimitRetry(checkUrl, { method: 'GET', headers }, 'history check');
-            const data = await res.json();
-            if (!data.ok) throw new Error(data.error);
-            channelName = await getChannelName(channelId);
-            isTokenSuccessful = true;
-        } catch (error) { if (!error.message?.includes('not_in_channel') && !error.message?.includes('channel_not_found')) { throw error; } }
+    let csvString = '';
+    // エラー時に備えて、ファイル名を事前に安全な形式で定義
+    let safeName = (name || channelId).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
+    let filePath = `slack_${safeName}.csv`;
+
+    try {
+        if (!channelId) { throw new Error("チャンネルIDが指定されていません。"); }
+        if (!SLACK_WORKSPACE_URL) { throw new Error(".envファイルにSLACK_WORKSPACE_URL（例: https://your-workspace.slack.com）を設定してください。"); }
+        if (!SLACK_BOT_TOKEN && !SLACK_USER_TOKEN) { throw new Error(".envファイルにSLACK_BOT_TOKENまたはSLACK_USER_TOKENを設定してください。"); }
+        
+        let channelName;
+        let isTokenSuccessful = false;
+        if (SLACK_BOT_TOKEN) {
+            headers = { Authorization: `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' };
+            try {
+                const checkUrl = `https://slack.com/api/conversations.history?channel=${channelId}&limit=1`;
+                const res = await fetchWithRateLimitRetry(checkUrl, { method: 'GET', headers }, 'history check');
+                const data = await res.json();
+                if (!data.ok) throw new Error(data.error);
+                channelName = await getChannelName(channelId);
+                isTokenSuccessful = true;
+            } catch (error) { if (!error.message?.includes('not_in_channel') && !error.message?.includes('channel_not_found')) { throw error; } }
+        }
+        if (!isTokenSuccessful && SLACK_USER_TOKEN) {
+            console.log("👤 ユーザートークンでチャンネル履歴へのアクセスを試行します...");
+            headers = { Authorization: `Bearer ${SLACK_USER_TOKEN}`, 'Content-Type': 'application/json' };
+            try {
+                const checkUrl = `https://slack.com/api/conversations.history?channel=${channelId}&limit=1`;
+                const res = await fetchWithRateLimitRetry(checkUrl, { method: 'GET', headers }, 'history check');
+                const data = await res.json();
+                if (!data.ok) throw new Error(data.error);
+                channelName = await getChannelName(channelId);
+                isTokenSuccessful = true;
+            } catch (error) { throw error; }
+        }
+        if (!isTokenSuccessful) { throw new Error(`利用可能なトークンではチャンネルID "${channelId}" にアクセスできませんでした。`); }
+
+        const allMessages = await fetchMessagesWithThreads(channelId);
+        
+        // 成功した場合、チャンネル名を使ってファイル名を更新
+        safeName = (name || channelName).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
+        const sourceLabel = `Slack #${channelName}`;
+
+        const threadUrlMap = new Map();
+        const threadTss = [...new Set(allMessages.filter(msg => msg.thread_ts).map(msg => msg.thread_ts))];
+
+        for (const ts of threadTss) {
+            const tsForPath = ts.replace('.', '');
+            const url = `${SLACK_WORKSPACE_URL}/archives/${channelId}/p${tsForPath}?thread_ts=${ts}&cid=${channelId}`;
+            threadUrlMap.set(ts, url);
+        }
+        
+        const userMessages = allMessages.filter(msg => msg.text).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
+        const records = userMessages.map((msg) => {
+            const cleanText = msg.text.replace(/\n/g, ' ').trim();
+            const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
+            const threadUrl = msg.thread_ts ? threadUrlMap.get(msg.thread_ts) || '' : '';
+
+            return {
+                user: msg.user || '',
+                text: cleanText,
+                ts: msg.ts,
+                thread_ts: threadId,
+                thread_url: threadUrl,
+                source: sourceLabel,
+                raw_data: JSON.stringify(msg)
+            };
+        });
+
+        csvString = stringify(records, {
+            header: true,
+            columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source', 'raw_data']
+        });
+
+    } catch (err) {
+        console.error(`❌ 処理中にエラーが発生しました: ${err.message}`);
+        // エラーが発生した場合、ヘッダーのみの空のCSV文字列を作成
+        csvString = stringify([], {
+            header: true,
+            columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source', 'raw_data']
+        });
+        console.log('ℹ️ エラーが発生したため、ヘッダーのみの空のCSVファイルを出力します。');
+    } finally {
+        // try...catchの結果に関わらず、必ずファイルを出力
+        filePath = `slack_${safeName}.csv`;
+        // writeFileSyncは同名ファイルがあれば上書きします
+        fs.writeFileSync(filePath, csvString);
+        console.log(`✅ CSV出力完了: ${filePath}`);
     }
-    if (!isTokenSuccessful && SLACK_USER_TOKEN) {
-        console.log("👤 ユーザートークンでチャンネル履歴へのアクセスを試行します...");
-        headers = { Authorization: `Bearer ${SLACK_USER_TOKEN}`, 'Content-Type': 'application/json' };
-        try {
-            const checkUrl = `https://slack.com/api/conversations.history?channel=${channelId}&limit=1`;
-            const res = await fetchWithRateLimitRetry(checkUrl, { method: 'GET', headers }, 'history check');
-            const data = await res.json();
-            if (!data.ok) throw new Error(data.error);
-            channelName = await getChannelName(channelId);
-            isTokenSuccessful = true;
-        } catch (error) { throw error; }
-    }
-    if (!isTokenSuccessful) { throw new Error(`利用可能なトークンではチャンネルID "${channelId}" にアクセスできませんでした。`); }
 
-    const allMessages = await fetchMessagesWithThreads(channelId);
-    
-    const safeName = (name || channelName).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
-    const sourceLabel = `Slack #${channelName}`;
-
-    const threadUrlMap = new Map();
-    const threadTss = [...new Set(allMessages.filter(msg => msg.thread_ts).map(msg => msg.thread_ts))];
-
-    for (const ts of threadTss) {
-        const tsForPath = ts.replace('.', '');
-        const url = `${SLACK_WORKSPACE_URL}/archives/${channelId}/p${tsForPath}?thread_ts=${ts}&cid=${channelId}`;
-        threadUrlMap.set(ts, url);
-    }
-    
-    const userMessages = allMessages.filter(msg => msg.text).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
-    const records = userMessages.map((msg) => {
-        const cleanText = msg.text.replace(/\n/g, ' ').trim();
-        const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
-        const threadUrl = msg.thread_ts ? threadUrlMap.get(msg.thread_ts) || '' : '';
-
-        return {
-            user: msg.user || '',
-            text: cleanText,
-            ts: msg.ts,
-            thread_ts: threadId,
-            thread_url: threadUrl,
-            source: sourceLabel,
-            raw_data: JSON.stringify(msg) // 元のJSONデータを文字列として追加
-        };
-    });
-
-    const csvString = stringify(records, {
-        header: true,
-        columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source', 'raw_data']
-    });
-
-    return { csvString, safeName };
+    return filePath; // 保存したファイルのパスを返す
 }
 
 // スクリプトが直接実行された場合の処理
@@ -209,26 +235,13 @@ if (require.main === module) {
             console.error("❌ チャンネルIDを引数で指定してください。");
             process.exit(1);
         }
-
-        let csvString = '';
-        let safeName = (name || channelId).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
-
+        // 関数を呼び出すだけで、ファイル保存まで実行される
         try {
-            const result = await getSlackPostsAndConvertToCsv(channelId, name);
-            csvString = result.csvString;
-            safeName = result.safeName;
-        } catch (err) {
-            console.error(`❌ 処理中にエラーが発生しました: ${err.message}`);
-            // ★★★ 変更: エラー時のCSV列にraw_dataを追加 ★★★
-            csvString = stringify([], {
-                header: true,
-                columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source', 'raw_data']
-            });
-            console.log('ℹ️ エラーが発生したため、ヘッダーのみの空のCSVファイルを出力します。');
-        } finally {
-            const filePath = `slack_${safeName}.csv`;
-            fs.writeFileSync(filePath, csvString);
-            console.log(`✅ CSV出力完了: ${filePath}`);
+            await getSlackPostsAndConvertToCsv(channelId, name);
+        } catch(err) {
+            // 関数内でエラーは処理されるが、念のため最終的なエラーハンドリング
+            console.error(`❌ 予期せぬエラーでスクリプトが終了しました: ${err.message}`);
+            process.exit(1);
         }
     })();
 }
