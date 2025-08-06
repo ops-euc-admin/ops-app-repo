@@ -9,10 +9,11 @@ dotenv.config();
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_USER_TOKEN = process.env.SLACK_USER_TOKEN;
 const INCLUDE_THREADS = process.env.INCLUDE_THREADS === 'true';
+const SLACK_WORKSPACE_URL = process.env.SLACK_WORKSPACE_URL;
 
 let headers;
 
-// (getPermalink, getChannelName, fetchThreadReplies, fetchWithRateLimitRetry の各関数は変更ありません)
+// (getChannelName, fetchThreadReplies, fetchWithRateLimitRetry の各関数は変更ありません)
 async function fetchWithRateLimitRetry(url, options, label = '') {
     let attempt = 0;
     while (true) {
@@ -28,17 +29,7 @@ async function fetchWithRateLimitRetry(url, options, label = '') {
         return res;
     }
 }
-async function getPermalink(channelId, messageTs) {
-    const params = new URLSearchParams({ channel: channelId, message_ts: messageTs });
-    const url = `https://slack.com/api/chat.getPermalink?${params.toString()}`;
-    const res = await fetchWithRateLimitRetry(url, { method: 'GET', headers }, `permalink:${channelId}`);
-    const data = await res.json();
-    if (!data.ok) {
-        console.warn(`パーマリンクの取得に失敗 (ts: ${messageTs}, channel: ${channelId}). Error: ${data.error}`);
-        return '';
-    }
-    return data.permalink;
-}
+
 async function getChannelName(channelId) {
     const res = await fetchWithRateLimitRetry(`https://slack.com/api/conversations.info?channel=${channelId}`, { method: 'GET', headers }, 'channel info');
     const data = await res.json();
@@ -60,7 +51,7 @@ async function fetchThreadReplies(channelId, threadTs) {
  * 指定されたチャンネルからメッセージとスレッドの返信をすべて取得します。
  */
 async function fetchMessagesWithThreads(channelId) {
-    console.log(`[1/3] チャンネル履歴の取得を開始します (チャンネルID: ${channelId})`);
+    console.log(`[1/2] チャンネル履歴の取得を開始します (チャンネルID: ${channelId})`);
     let hasMore = true;
     let cursor = null;
     const messagesFromHistory = [];
@@ -94,13 +85,11 @@ async function fetchMessagesWithThreads(channelId) {
     }
 
     if (INCLUDE_THREADS && threadTsToFetch.size > 0) {
-        // ★★★ 並列数を設定 ★★★
         const limit = pLimit(3); 
-        // ★★★ APIのレート（Tier 2: 20回/分）に基づき、最低3秒の間隔を設ける ★★★
-        const MIN_INTERVAL = 3000; // 3000ミリ秒 = 3秒
+        const MIN_INTERVAL = 3000;
 
         const threadTsArray = Array.from(threadTsToFetch);
-        console.log(`[2/3] ${threadTsToFetch.size}件のスレッドを、1件あたり最低${MIN_INTERVAL / 1000}秒の間隔を保ちながら取得します...`);
+        console.log(`[2/2] ${threadTsToFetch.size}件のスレッドを取得します...`);
         
         let processedCount = 0;
         const totalCount = threadTsArray.length;
@@ -142,7 +131,9 @@ async function fetchMessagesWithThreads(channelId) {
  */
 async function getSlackPostsAndConvertToCsv(channelId, name) {
     if (!channelId) { throw new Error("チャンネルIDが指定されていません。"); }
+    if (!SLACK_WORKSPACE_URL) { throw new Error(".envファイルにSLACK_WORKSPACE_URL（例: https://your-workspace.slack.com）を設定してください。"); }
     if (!SLACK_BOT_TOKEN && !SLACK_USER_TOKEN) { throw new Error(".envファイルにSLACK_BOT_TOKENまたはSLACK_USER_TOKENを設定してください。"); }
+    
     let channelName;
     let isTokenSuccessful = false;
     if (SLACK_BOT_TOKEN) {
@@ -170,97 +161,76 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
     }
     if (!isTokenSuccessful) { throw new Error(`利用可能なトークンではチャンネルID "${channelId}" にアクセスできませんでした。`); }
 
-    try {
-        const safeName = (name || channelName).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
-        const sourceLabel = `Slack #${channelName}`;
+    const allMessages = await fetchMessagesWithThreads(channelId);
+    
+    const safeName = (name || channelName).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
+    const sourceLabel = `Slack #${channelName}`;
 
-        const allMessages = await fetchMessagesWithThreads(channelId);
-        
-        const threadTss = [...new Set(allMessages.filter(msg => msg.thread_ts).map(msg => msg.thread_ts))];
-        const threadUrlMap = new Map();
+    const threadUrlMap = new Map();
+    const threadTss = [...new Set(allMessages.filter(msg => msg.thread_ts).map(msg => msg.thread_ts))];
 
-        if (threadTss.length > 0) {
-            const limit = pLimit(3);
-            // ★★★ APIのレート（Tier 3: 50回/分）に基づき、最低1.2秒の間隔を設ける ★★★
-            const MIN_INTERVAL = 1200; // 1200ミリ秒 = 1.2秒
-
-            console.log(`[3/3] スレッドのパーマリンクを ${threadTss.length} 件、1件あたり最低${MIN_INTERVAL / 1000}秒の間隔を保ちながら取得します...`);
-
-            let processedCount = 0;
-            const totalCount = threadTss.length;
-
-            const promises = threadTss.map(ts => {
-                return limit(async () => {
-                    const startTime = Date.now();
-                    const permalink = await getPermalink(channelId, ts);
-                    
-                    const elapsedTime = Date.now() - startTime;
-                    const delayNeeded = MIN_INTERVAL - elapsedTime;
-
-                    if (delayNeeded > 0) {
-                        await new Promise(resolve => setTimeout(resolve, delayNeeded));
-                    }
-                    
-                    processedCount++;
-                    process.stdout.write(`  - パーマリンク取得中: ${processedCount} / ${totalCount} (${Math.round((processedCount / totalCount) * 100)}%)\r`);
-                    return { ts, permalink };
-                });
-            });
-            
-            const permalinkResults = await Promise.all(promises);
-            process.stdout.write('\n');
-
-            for (const { ts, permalink } of permalinkResults) {
-                if (permalink) {
-                    threadUrlMap.set(ts, permalink);
-                }
-            }
-            console.log("✅ パーマリンクの取得が完了しました。");
-        }
-        
-        const userMessages = allMessages.filter(msg => msg.text).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
-        const records = userMessages.map((msg) => {
-            const cleanText = msg.text.replace(/\n/g, ' ').trim();
-            const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
-            const threadUrl = msg.thread_ts ? threadUrlMap.get(msg.thread_ts) || '' : '';
-
-            return {
-                user: msg.user || '',
-                text: cleanText,
-                ts: msg.ts,
-                thread_ts: threadId,
-                thread_url: threadUrl,
-                source: sourceLabel
-            };
-        });
-
-        const csvString = stringify(records, {
-            header: true,
-            columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source']
-        });
-
-        return { csvString, safeName };
-
-    } catch (err) {
-        console.error(`❌ 取得エラー (チャンネルID: ${channelId}):`, err.message);
-        throw err;
+    for (const ts of threadTss) {
+        const tsForPath = ts.replace('.', '');
+        const url = `${SLACK_WORKSPACE_URL}/archives/${channelId}/p${tsForPath}?thread_ts=${ts}&cid=${channelId}`;
+        threadUrlMap.set(ts, url);
     }
+    
+    const userMessages = allMessages.filter(msg => msg.text).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
+    const records = userMessages.map((msg) => {
+        const cleanText = msg.text.replace(/\n/g, ' ').trim();
+        const threadId = (msg.thread_ts && msg.thread_ts !== msg.ts) ? msg.thread_ts : '';
+        const threadUrl = msg.thread_ts ? threadUrlMap.get(msg.thread_ts) || '' : '';
+
+        return {
+            user: msg.user || '',
+            text: cleanText,
+            ts: msg.ts,
+            thread_ts: threadId,
+            thread_url: threadUrl,
+            source: sourceLabel,
+            raw_data: JSON.stringify(msg) // 元のJSONデータを文字列として追加
+        };
+    });
+
+    const csvString = stringify(records, {
+        header: true,
+        columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source', 'raw_data']
+    });
+
+    return { csvString, safeName };
 }
 
+// スクリプトが直接実行された場合の処理
 if (require.main === module) {
-    const channelId = process.argv[2];
-    const name = process.argv[3];
-    if (!channelId) { console.error("❌ チャンネルIDを引数で指定してください。"); process.exit(1); }
-    getSlackPostsAndConvertToCsv(channelId, name)
-        .then(({ csvString, safeName }) => {
+    (async () => {
+        const channelId = process.argv[2];
+        const name = process.argv[3];
+        if (!channelId) {
+            console.error("❌ チャンネルIDを引数で指定してください。");
+            process.exit(1);
+        }
+
+        let csvString = '';
+        let safeName = (name || channelId).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
+
+        try {
+            const result = await getSlackPostsAndConvertToCsv(channelId, name);
+            csvString = result.csvString;
+            safeName = result.safeName;
+        } catch (err) {
+            console.error(`❌ 処理中にエラーが発生しました: ${err.message}`);
+            // ★★★ 変更: エラー時のCSV列にraw_dataを追加 ★★★
+            csvString = stringify([], {
+                header: true,
+                columns: ['user', 'text', 'ts', 'thread_ts', 'thread_url', 'source', 'raw_data']
+            });
+            console.log('ℹ️ エラーが発生したため、ヘッダーのみの空のCSVファイルを出力します。');
+        } finally {
             const filePath = `slack_${safeName}.csv`;
             fs.writeFileSync(filePath, csvString);
             console.log(`✅ CSV出力完了: ${filePath}`);
-        })
-        .catch(err => {
-            console.error(`❌ 最終エラー (チャンネルID: ${channelId}): ${err.message}`);
-            process.exit(1);
-        });
+        }
+    })();
 }
 
 module.exports = {
