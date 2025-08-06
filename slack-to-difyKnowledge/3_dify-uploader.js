@@ -108,7 +108,7 @@ async function createDocumentInDify(csvString, knowledgeBaseId, fileName) {
             rules: {
                 pre_processing_rules: [
                     { id: "remove_extra_spaces", enabled: true },
-                    { id: "remove_urls_emails", enabled: true }
+                    { id: "remove_urls_emails", enabled: false }
                 ],
                 segmentation: {
                     separator: "\n\n", // スクリーンショットのチャンク識別子

@@ -223,7 +223,7 @@ async function getSlackPostsAndConvertToCsv(channelId, name) {
         console.log(`✅ CSV出力完了: ${filePath}`);
     }
 
-    return filePath; // 保存したファイルのパスを返す
+    return { csvString, safeName };
 }
 
 // スクリプトが直接実行された場合の処理
