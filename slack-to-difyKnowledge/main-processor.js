@@ -29,7 +29,7 @@ async function processChannels(channels) {
             console.log(`\n--- ${name} (${channel_id}) の処理を開始します ---`);
             
             // 1. Slackから投稿を取得し、CSV文字列を受け取る
-            const { csvString: slackCsv, safeName } = await getSlackPostsAndConvertToCsv(channel_id, name);
+            const { csvString: slackCsv, safeName } = await getSlackPostsAndConvertToCsv(channel_id, name, { output: 'string' });
             console.log(`Slackデータ取得とCSV文字列生成完了: ${safeName}`);
             
             // 2. CSV文字列をDify用に変換し、"分割されたCSV文字列の配列"を受け取る

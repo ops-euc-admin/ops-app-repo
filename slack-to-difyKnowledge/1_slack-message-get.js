@@ -363,7 +363,8 @@ async function getSlackPostsAndConvertToCsv(channelId, name, options = {}) {
         }
 
         stringifier.end();
-        return await streamPromise;
+        const csvString = await streamPromise;
+        return { csvString, safeName };
     }
 }
 

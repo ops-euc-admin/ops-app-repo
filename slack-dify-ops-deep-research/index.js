@@ -457,7 +457,7 @@ app.receiver.client.on('disconnected', (event) => {
         // 使用するには、プロジェクトのルートにテストしたいファイルを配置し、
         // 以下の行のコメントを解除してファイルパスの配列を指定してください。
         //await testLocalFileUpload(['./Ops起案・案件管理.pdf', './レコーディング 2025-08-07 070852.mp4']); 
-        await testLocalFileUpload(['./レコーディング 2025-08-07 070852.mp4','./Ops起案・案件管理.pdf']); 
+        //await testLocalFileUpload(['./レコーディング 2025-08-07 070852.mp4','./Ops起案・案件管理.pdf']); 
 
     } catch (err) {
         console.error('[FATAL] Slackアプリ起動時エラー:', err);
