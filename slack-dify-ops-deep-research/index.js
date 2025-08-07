@@ -3,31 +3,19 @@ import pkg from '@slack/bolt';
 const { App } = pkg;
 import fetch from 'node-fetch';
 import { LogLevel } from '@slack/logger';
-
-// ファイルダウンロードとS3アップロードに必要なライブラリをインポート
-import axios from 'axios';
-import { S3Client } from '@aws-sdk/client-s3';
-import { Upload } from '@aws-sdk/lib-storage';
-import { Readable } from 'stream';
-
-// AWS S3クライアントの初期化
-const s3Client = new S3Client({
-    region: process.env.AWS_REGION, // 環境変数からAWSリージョンを取得
-    credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    },
-});
+import FormData from 'form-data'; // Difyへのファイルアップロードに必要
+import axios from 'axios'; // Slackからのファイルダウンロードに利用
+import fs from 'fs/promises'; // テスト用にfs/promisesをインポート
+import path from 'path'; // テスト用にpathをインポート
 
 const app = new App({
     socketMode: true,
     appToken: process.env.SLACK_APP_TOKEN,
     token: process.env.SLACK_BOT_TOKEN,
-    logLevel: LogLevel.DEBUG, // デバッグレベルのログを有効化
+    logLevel: LogLevel.DEBUG,
 });
 
 // 会話IDを一時的に保存するためのメモリ上のストア
-// 本番環境では永続化ストア（Redis, DBなど）の利用を推奨
 const conversationStore = {};
 
 /**
@@ -53,34 +41,34 @@ function convertDifyAnswerToSlackBlocks(textContent) {
  * @param {object} params.event - Slackイベントオブジェクト
  * @param {object} params.client - Slack WebClient
  * @param {string} [params.overrideText] - Difyに送信するテキストをevent.textの代わりに上書きする場合
+ * @param {Array<object>} [params.files] - Difyに送信するファイルオブジェクトの配列
  */
-async function callDifyChatApi({ event, client, overrideText }) {
-    // メッセージのテキストから、メンション部分を綺麗に取り除く（DMでは不要だが共通化）
+async function callDifyChatApi({ event, client, overrideText, files }) {
+    // メッセージのテキストから、メンション部分を綺麗に取り除く
     const userText = overrideText || (event.text || '').replace(/<@U[0-9A-Z]+>\s*/, '').trim();
 
-    // スレッドの親メッセージのtsを常に使う
     const threadTs = event.thread_ts || event.ts;
-    const conversationKey = `${event.channel}-${event.thread_ts || event.ts}`;
+    const conversationKey = `${event.channel}-${threadTs}`;
 
-    if (!userText) {
-        console.log('[INFO] ユーザーテキストが空のためDifyへの質問をスキップします。');
+    // テキストがなく、ファイルもない場合は処理をスキップ
+    if (!userText && (!files || files.length === 0)) {
+        console.log('[INFO] ユーザーテキストもファイルもないためDifyへの質問をスキップします。');
         return;
     }
 
     const conversationId = conversationStore[conversationKey] || "";
-    console.log(`[INFO] Difyへの質問: "${userText}", 会話ID: ${conversationId || '（新規）'}`);
+    console.log(`[INFO] Difyへの質問: "${userText}", 会話ID: ${conversationId || '（新規）'}, ファイル数: ${files ? files.length : 0}`);
 
     // 仮メッセージを投稿
     const pending = await client.chat.postMessage({
         channel: event.channel,
-        text: "回答準備中です。少々お待ちください。", // Fallback text for notifications
+        text: "回答準備中です。少々お待ちください。",
         thread_ts: threadTs
     });
 
     let parentDeleted = false;
-    let parentCheckTimeout = null; // setIntervalの代わりにsetTimeoutを使用
+    let parentCheckTimeout = null;
 
-    // 親スレッドの削除チェック関数
     async function checkParentDeleted() {
         try {
             const replies = await client.conversations.replies({
@@ -97,26 +85,27 @@ async function callDifyChatApi({ event, client, overrideText }) {
         }
     }
 
-    // 親スレッドの削除を定期的にチェックする再帰関数
     const startParentCheck = async () => {
         await checkParentDeleted();
         if (!parentDeleted) {
-            parentCheckTimeout = setTimeout(startParentCheck, 30000); // 30秒ごとに再チェック
+            parentCheckTimeout = setTimeout(startParentCheck, 30000);
         }
     };
 
     try {
-        startParentCheck(); // 親スレッドチェックを開始
+        startParentCheck();
 
         const response = await fetch("https://dify.app.uzabase.com/v1/chat-messages", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.DIFY_API_KEY}` },
             body: JSON.stringify({
-                inputs: {},
+                inputs: {
+                    "uploaded_files": files || []
+                },
                 query: userText,
                 response_mode: "streaming",
                 conversation_id: conversationId,
-                user: event.user // SlackユーザーIDをDifyのユーザーとして渡す
+                user: event.user
             })
         });
 
@@ -129,9 +118,8 @@ async function callDifyChatApi({ event, client, overrideText }) {
         let newConversationId = "";
         let lastUpdateText = "";
         let lastUpdateTime = Date.now();
-        const updateInterval = 2000; // 2秒ごとにSlackを更新
+        const updateInterval = 2000;
 
-        // ストリーミングレスポンスの処理
         for await (const chunk of response.body) {
             if (parentDeleted) {
                 throw new Error('親スレッドが削除されたため投稿を中断します');
@@ -144,22 +132,20 @@ async function callDifyChatApi({ event, client, overrideText }) {
                     if (jsonData.answer) { fullAnswer += jsonData.answer; }
                     if (jsonData.conversation_id && !newConversationId) { newConversationId = jsonData.conversation_id; }
                 } catch (e) {
-                    // JSONパースエラーは無視するが、デバッグのためにログ出力しても良い
-                    // console.warn('[WARN] DifyストリーミングJSONパースエラー:', e.message, 'Line:', line);
+                    // JSONパースエラーは無視
                 }
             }
-            // 2秒ごとにSlackメッセージを更新（fullAnswerが空の間は更新しない）
             if (Date.now() - lastUpdateTime > updateInterval && !parentDeleted) {
                 if (fullAnswer.trim().length > 0) {
                     const answerText = formatForSlack(fullAnswer.trim());
                     const messages = splitMessage(answerText);
                     if (messages[0] !== lastUpdateText) {
-                        const blocksToUpdate = convertDifyAnswerToSlackBlocks(messages[0]); // Block Kitに変換
+                        const blocksToUpdate = convertDifyAnswerToSlackBlocks(messages[0]);
                         await client.chat.update({
                             channel: event.channel,
                             ts: pending.ts,
-                            text: messages[0], // Fallback text for notifications
-                            blocks: blocksToUpdate, // Block Kitを使用
+                            text: messages[0],
+                            blocks: blocksToUpdate,
                             thread_ts: threadTs
                         });
                         lastUpdateText = messages[0];
@@ -174,44 +160,33 @@ async function callDifyChatApi({ event, client, overrideText }) {
             console.log(`[INFO] 新しい会話ID(${newConversationId})をキー(${conversationKey})で保存しました。`);
         }
 
-        // 最終的な回答を分割して投稿
         const answerText = formatForSlack(fullAnswer.trim() || "（AIから有効な回答を得られませんでした）");
         const messages = splitMessage(answerText);
 
-        // 1つ目は仮メッセージを上書き
         if (!parentDeleted) {
             const finalBlocksForFirstPart = convertDifyAnswerToSlackBlocks(messages[0]);
-            // 最後のメッセージ部分にのみ区切り線と追加の質問ブロックを追加
             if (messages.length === 1) {
-                finalBlocksForFirstPart.push(
-                    { "type": "divider" }
-                );
+                finalBlocksForFirstPart.push({ "type": "divider" });
             }
-
             await client.chat.update({
                 channel: event.channel,
                 ts: pending.ts,
-                text: messages[0], // Fallback text for notifications
-                blocks: finalBlocksForFirstPart, // Block Kitを使用
+                text: messages[0],
+                blocks: finalBlocksForFirstPart,
                 thread_ts: threadTs
             });
         }
 
-        // 2つ目以降も必ず3900文字以内で投稿
         for (let i = 1; i < messages.length; i++) {
             if (parentDeleted) break;
             const blocksForSubsequentPart = convertDifyAnswerToSlackBlocks(messages[i]);
-            const currentBlocks = [...blocksForSubsequentPart];
-            // 最後のメッセージ部分にのみ区切り線と追加の質問ブロックを追加
             if (i === messages.length - 1) {
-                currentBlocks.push(
-                    { "type": "divider" }
-                );
+                blocksForSubsequentPart.push({ "type": "divider" });
             }
             await client.chat.postMessage({
                 channel: event.channel,
-                text: messages[i], // Fallback text for notifications
-                blocks: currentBlocks, // Block Kitを使用
+                text: messages[i],
+                blocks: blocksForSubsequentPart,
                 thread_ts: threadTs
             });
         }
@@ -224,11 +199,10 @@ async function callDifyChatApi({ event, client, overrideText }) {
         console.error('[ERROR] Dify連携処理中にエラーが発生しました:', error);
         await client.chat.postMessage({
             channel: event.channel,
-            text: `すみません、AIとの連携処理でエラーが発生しました！\n\`\`\`${error.message}\`\`\``, // エラーメッセージも表示
+            text: `すみません、AIとの連携処理でエラーが発生しました！\n\`\`\`${error.message}\`\`\``,
             thread_ts: threadTs
         });
     } finally {
-        // setTimeoutのクリアを忘れずに
         if (parentCheckTimeout) clearTimeout(parentCheckTimeout);
     }
 }
@@ -238,7 +212,6 @@ function splitMessage(text, maxBytes = 3900) {
     const result = [];
     let buffer = '';
     let bufferBytes = 0;
-
     for (const char of text) {
         const charBytes = Buffer.byteLength(char, 'utf8');
         if (bufferBytes + charBytes > maxBytes) {
@@ -258,22 +231,23 @@ function splitMessage(text, maxBytes = 3900) {
 // DifyのMarkdownをSlack向けに整形する関数
 function formatForSlack(text) {
     return text
-        // 箇条書きの「* 」または「- 」をSlackの「- 」に変換
         .replace(/^[*-] (.*)$/gm, '- $1')
-        // Markdown太字「**text**」をSlack太字「*text*」に変換（複数行・複数箇所対応）
         .replace(/\*\*([^\*]+?)\*\*/g, '*$1*')
-        // 6～1個の#で始まる行をすべて太字に
         .replace(/^###### (.*)$/gm, '*$1*')
         .replace(/^##### (.*)$/gm, '*$1*')
         .replace(/^#### (.*)$/gm, '*$1*')
         .replace(/^### (.*)$/gm, '*$1*')
         .replace(/^## (.*)$/gm, '*$1*')
         .replace(/^# (.*)$/gm, '*$1*')
-        // 区切り線「***」を削除
         .replace(/^[*]{3,}$/gm, '');
 }
 
-// Slackからファイルをダウンロードする関数
+/**
+ * Slackからファイルをダウンロードする関数
+ * @param {string} fileUrl - ダウンロードするファイルのプライベートURL
+ * @param {string} token - Slackボットトークン
+ * @returns {Promise<Buffer>} ファイルのBuffer
+ */
 async function downloadFile(fileUrl, token) {
     try {
         const response = await axios({
@@ -291,105 +265,186 @@ async function downloadFile(fileUrl, token) {
     }
 }
 
-// S3にファイルをアップロードする関数
-async function uploadFileToS3(fileBuffer, fileName, contentType) {
-    const key = `slack-uploads/${Date.now()}-${fileName}`; // S3のキー
-    const params = {
-        Bucket: process.env.AWS_S3_BUCKET_NAME,
-        Key: key,
-        Body: Readable.from(fileBuffer), // BufferをReadableストリームに変換
-        ContentType: contentType,
-        ACL: 'public-read', // 公開アクセス可能にする（必要に応じて変更）
-    };
+/**
+ * ファイルをDifyにアップロードする関数
+ * @param {Buffer} fileBuffer - アップロードするファイルのBuffer
+ * @param {string} fileName - 元のファイル名
+ * @param {string} user - SlackユーザーID
+ * @param {string} difyApiKey - DifyのAPIキー
+ * @returns {Promise<object>} Difyからのアップロード結果
+ */
+async function uploadFileToDify(fileBuffer, fileName, user, difyApiKey) {
+    const formData = new FormData();
+    formData.append('user', user);
+    formData.append('file', fileBuffer, { filename: fileName });
 
     try {
-        const uploader = new Upload({
-            client: s3Client,
-            params: params,
+        const response = await fetch('https://dify.app.uzabase.com/v1/files/upload', {
+            method: 'POST',
+            headers: {
+                ...formData.getHeaders(),
+                'Authorization': `Bearer ${difyApiKey}`
+            },
+            body: formData
         });
 
-        await uploader.done();
-        const fileUrl = `${process.env.S3_BASE_URL}${key}`;
-        return fileUrl;
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`Dify API Error (upload): Status ${response.status}, Body: ${errorBody}`);
+        }
+        return await response.json();
     } catch (error) {
-        console.error('Error uploading file to S3:', error);
-        throw new Error('Failed to upload file to S3');
+        console.error(`Error uploading file to Dify: ${fileName}`, error);
+        throw new Error(`Failed to upload file to Dify: ${fileName}`);
     }
 }
 
-// Slackでファイルがアップロードされたイベントをリッスン
-app.event('file_shared', async ({ event, client, logger }) => {
-    try {
-        const fileInfo = await client.files.info({ file: event.file_id });
-        const file = fileInfo.file;
+/**
+ * ★ 新規追加: ファイルのMIMEタイプからDify用のファイルタイプを決定するヘルパー関数
+ * @param {string} mimetype - ファイルのMIMEタイプ (e.g., 'image/png', 'application/pdf')
+ * @returns {string} 'image', 'audio', 'video', または 'document'
+ */
+function getDifyFileType(mimetype) {
+    if (!mimetype) return 'document';
+    if (mimetype.startsWith('image/')) return 'image';
+    if (mimetype.startsWith('audio/')) return 'audio';
+    if (mimetype.startsWith('video/')) return 'video';
+    return 'document';
+}
 
-        if (!file || !file.url_private_download) {
-            logger.error('File info or download URL not found.');
-            return;
+/**
+ * ★ 修正: 複数のローカルファイルのアップロードをテストする関数
+ * @param {Array<string>} localFilePaths - テストしたいローカルファイルのパスの配列
+ */
+async function testLocalFileUpload(localFilePaths) {
+    console.log(`[TEST] ローカルファイルテストを開始: ${localFilePaths.join(', ')}`);
+    try {
+        const user = 'local-test-user';
+
+        const uploadPromises = localFilePaths.map(async (localFilePath) => {
+            const fileBuffer = await fs.readFile(localFilePath);
+            const fileName = path.basename(localFilePath);
+            console.log(`[TEST] ファイル読み込み完了: ${fileName}`);
+            return uploadFileToDify(fileBuffer, fileName, user, process.env.DIFY_API_KEY);
+        });
+
+        const difyUploadResults = await Promise.all(uploadPromises);
+        console.log('[TEST] Difyへの全ファイルアップロード成功');
+
+        const difyFilesPayload = difyUploadResults.map(result => ({
+            type: getDifyFileType(result.mime_type),
+            transfer_method: 'local_file',
+            upload_file_id: result.id
+        }));
+
+        console.log('[TEST] DifyチャットAPIにテストクエリを送信します...');
+        const testQuery = `アップロードしたファイル群について、それぞれ内容を要約してください。`;
+         console.log(difyFilesPayload);
+        
+        const response = await fetch("https://dify.app.uzabase.com/v1/chat-messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.DIFY_API_KEY}` },
+            body: JSON.stringify({
+                inputs: {
+                    "uploaded_files": difyFilesPayload
+                },
+                query: testQuery,
+                response_mode: "blocking",
+                conversation_id: "",
+                user: user,
+            })
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`Dify APIエラー (テストチャット): Status ${response.status}, Body: ${errorBody}`);
         }
 
-        await client.chat.postMessage({
-            channel: event.channel_id || event.channel,
-            text: `ファイル "${file.name}" を受け取りました。外部ストレージに保存しています...`,
-        });
-
-        // ファイルをダウンロード
-        const fileBuffer = await downloadFile(file.url_private_download, process.env.SLACK_BOT_TOKEN);
-
-        // S3にアップロード
-        const s3FileUrl = await uploadFileToS3(fileBuffer, file.name, file.mimetype);
-
-        await client.chat.postMessage({
-            channel: event.channel_id || event.channel,
-            text: `ファイル "${file.name}" がS3に保存されました: ${s3FileUrl}\nこのURLをDifyに渡します。`,
-        });
-
-        // DifyにファイルのURLを送信
-        const query = `以下のURLにあるファイルについて分析してください: ${s3FileUrl}`;
-        // callDifyChatApiを呼び出す際に、eventとclientを渡し、overrideTextでDifyへのクエリを指定
-        await callDifyChatApi({ event, client, overrideText: query });
+        const result = await response.json();
+        console.log('[TEST] Difyからのテスト応答:', result.answer);
 
     } catch (error) {
-        logger.error('Failed to process file_shared event:', error);
-        await client.chat.postMessage({
-            channel: event.channel_id || event.channel,
-            text: `ファイルの処理中にエラーが発生しました: ${error.message}`,
-        });
+        console.error('[TEST] ローカルファイルテスト中にエラーが発生しました:', error);
+    }
+}
+
+
+// メンション、DM、ファイル共有を単一のハンドラで処理
+app.message(async ({ message, client, context, logger }) => {
+    // ボット自身のメッセージは無視
+    if (message.bot_id) {
+        return;
+    }
+
+    // メンション、DM、またはファイル共有があった場合に処理
+    const isDirectMessage = message.channel_type === 'im' || message.channel_type === 'mpim';
+    const isMentioned = message.text && message.text.includes(`<@${context.botUserId}>`);
+    const hasFiles = message.files && message.files.length > 0;
+
+    if (isDirectMessage || isMentioned || hasFiles) {
+        let difyFilesPayload = [];
+
+        try {
+            if (hasFiles) {
+                logger.info(`${message.files.length}個のファイルを処理します...`);
+                
+                // Promise.allで全ファイルを並行してアップロード
+                const uploadPromises = message.files.map(async (file) => {
+                    if (!file.url_private_download) {
+                        logger.warn(`ファイル ${file.name} にダウンロードURLがありません。スキップします。`);
+                        return null;
+                    }
+                    // 1. Slackからダウンロード
+                    const fileBuffer = await downloadFile(file.url_private_download, context.botToken);
+
+                    // 2. Difyにアップロード
+                    const difyUploadResult = await uploadFileToDify(fileBuffer, file.name, message.user, process.env.DIFY_API_KEY);
+
+                    // 3. Dify API用のペイロードを作成
+                    // ★ 修正点: MIMEタイプに基づいてファイルタイプを動的に決定
+                    const fileType = getDifyFileType(file.mimetype);
+                    return {
+                        type: fileType,
+                        transfer_method: 'local_file',
+                        upload_file_id: difyUploadResult.id
+                    };
+                });
+
+                difyFilesPayload = (await Promise.all(uploadPromises)).filter(p => p !== null);
+                logger.info('全てのファイルのアップロードが完了しました。');
+            }
+
+            // Dify APIを呼び出す
+            await callDifyChatApi({
+                event: message,
+                client: client,
+                files: difyFilesPayload
+            });
+
+        } catch (error) {
+            logger.error('ファイル処理またはDify連携でエラーが発生しました:', error);
+            await client.chat.postMessage({
+                channel: message.channel,
+                text: `処理中にエラーが発生しました: ${error.message}`,
+                thread_ts: message.thread_ts || message.ts
+            });
+        }
     }
 });
 
-// メンションイベント
-app.event('app_mention', async ({ event, client }) => {
-    await callDifyChatApi({ event, client });
-});
 
-// DMイベント
-app.event('message', async ({ event, client }) => {
-    if (event.channel_type === 'im' && !event.bot_id) {
-        await callDifyChatApi({ event, client });
-    }
-});
-
-// 接続が確立したとき
+// 接続確立・切断時のログ出力
 app.receiver.client.on('connected', () => {
     console.log('[INFO] socket-mode:SocketModeClient:0 正常にSlackに接続されました。');
 });
 
-// Slackとの接続が切れたとき
 app.receiver.client.on('disconnected', (event) => {
-    // SocketModeClientはデフォルトで自動再接続を試みるため、
-    // ここで手動で app.start() を呼び出す必要はありません。
-    // 手動で呼び出すと、ステートマシンが予期しない状態になる可能性があります。
-    console.error(`[WARN] Slackとの接続が切れました。理由: ${event.reason}`);
-
-    // 致命的なエラー（例：トークン無効）でなければ、SocketModeClientの自動再接続に任せる
-    // 'link_disabled' はApp-Level Tokenが無効化された場合など、回復不能なエラー
+    console.error(`[WARN] Slackとの接続が切れました。理由: ${event.reason || '不明'}`);
     if (event.reason === 'link_disabled') {
         console.error('[FATAL] 回復不能なエラーのため、プロセスを終了します。Slackアプリの設定を確認してください。');
         process.exit(1);
     } else {
         console.log('[INFO] Slackとの接続が切れましたが、自動再接続を試みます...');
-        // ここで手動の再接続ロジック（setTimeoutとapp.start()）は削除
     }
 });
 
@@ -397,13 +452,19 @@ app.receiver.client.on('disconnected', (event) => {
     try {
         await app.start();
         console.log('⚡️ 本番用Dify連携ボットが起動しました！！');
+        
+        // ★ テスト用: 複数・多種類のローカルファイルアップロードのテストを実行
+        // 使用するには、プロジェクトのルートにテストしたいファイルを配置し、
+        // 以下の行のコメントを解除してファイルパスの配列を指定してください。
+        //await testLocalFileUpload(['./Ops起案・案件管理.pdf', './レコーディング 2025-08-07 070852.mp4']); 
+        await testLocalFileUpload(['./レコーディング 2025-08-07 070852.mp4','./Ops起案・案件管理.pdf']); 
+
     } catch (err) {
         console.error('[FATAL] Slackアプリ起動時エラー:', err);
         process.exit(1);
     }
 })();
 
-// Socket Modeの致命的エラー時に自動再起動できるように
 process.on('uncaughtException', (err) => {
     console.error('[FATAL] 未処理例外:', err);
     process.exit(1);
