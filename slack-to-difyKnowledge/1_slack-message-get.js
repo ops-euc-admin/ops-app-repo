@@ -324,7 +324,21 @@ async function getSlackPostsAndConvertToCsv(channelId, name, options = {}) {
                         const params = new URLSearchParams({ channel: channelId, ts: threadTs, limit: '200' });
                         if (repliesCursor) params.append('cursor', repliesCursor);
                         const res = await fetchWithRateLimitRetry(`https://slack.com/api/conversations.replies?${params.toString()}`, { method: 'GET', headers }, `replies:${threadTs}`);
-                        const data = await res.json();
+
+                        let data;
+                        try {
+                            data = await res.json();
+                        } catch (e) {
+                            // JSONの解析に失敗した場合 (HTMLエラーページなどが返ってきた場合)
+                            if (e instanceof SyntaxError) {
+                                console.warn(`\n⚠️ スレッド(ts: ${threadTs})のJSON解析に失敗しました。レスポンスが不正です。このスレッドをスキップします。`);
+                                hasMoreReplies = false; // このスレッドの処理を中断
+                                continue; // 次のループ処理（この場合は存在しないが、whileを抜ける）へ
+                            }
+                            // その他の予期せぬエラーは再スローする
+                            throw e;
+                        }
+                        
                         if (!data.ok) { console.warn(`スレッド返信の取得失敗 (ts: ${threadTs}): ${data.error}`); break; }
                         for (const msg of data.messages) {
                             if (!msg.text || writtenMessages.has(msg.ts)) continue;

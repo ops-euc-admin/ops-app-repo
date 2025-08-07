@@ -36,6 +36,12 @@ function convertDifyAnswerToSlackBlocks(textContent) {
 }
 
 /**
+ * ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+ *
+ * 修正後のコアロジック
+ * 親スレッドが削除された場合の処理を改善しました。
+ *
+ * ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
  * DifyチャットAPIを呼び出し、Slackに回答を投稿する共通処理
  * @param {object} params - パラメータオブジェクト
  * @param {object} params.event - Slackイベントオブジェクト
@@ -44,13 +50,10 @@ function convertDifyAnswerToSlackBlocks(textContent) {
  * @param {Array<object>} [params.files] - Difyに送信するファイルオブジェクトの配列
  */
 async function callDifyChatApi({ event, client, overrideText, files }) {
-    // メッセージのテキストから、メンション部分を綺麗に取り除く
     const userText = overrideText || (event.text || '').replace(/<@U[0-9A-Z]+>\s*/, '').trim();
-
     const threadTs = event.thread_ts || event.ts;
     const conversationKey = `${event.channel}-${threadTs}`;
 
-    // テキストがなく、ファイルもない場合は処理をスキップ
     if (!userText && (!files || files.length === 0)) {
         console.log('[INFO] ユーザーテキストもファイルもないためDifyへの質問をスキップします。');
         return;
@@ -59,7 +62,6 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
     const conversationId = conversationStore[conversationKey] || "";
     console.log(`[INFO] Difyへの質問: "${userText}", 会話ID: ${conversationId || '（新規）'}, ファイル数: ${files ? files.length : 0}`);
 
-    // 仮メッセージを投稿
     const pending = await client.chat.postMessage({
         channel: event.channel,
         text: "回答準備中です。少々お待ちください。",
@@ -78,30 +80,42 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
             });
             if (!replies.messages || replies.messages.length === 0) {
                 parentDeleted = true;
-                console.log(`[INFO] 親スレッド(${threadTs})が削除されたため投稿を停止します。`);
+                console.log(`[INFO] 親スレッド(${threadTs})が削除されたため投稿を停止します(ポーリング)。`);
+                if (parentCheckTimeout) clearTimeout(parentCheckTimeout);
             }
         } catch (e) {
-            console.warn('[WARN] 親スレッド削除チェックでエラー:', e);
+            if (e.data && e.data.error === 'thread_not_found') {
+                parentDeleted = true;
+                console.log(`[INFO] 親スレッド(${threadTs})が見つからないため投稿を停止します(ポーリングエラー)。`);
+                if (parentCheckTimeout) clearTimeout(parentCheckTimeout);
+            } else {
+                console.warn('[WARN] 親スレッド削除チェックで予期せぬエラー:', e);
+            }
         }
     }
 
-    const startParentCheck = async () => {
+    const checkPeriodically = async () => {
         await checkParentDeleted();
         if (!parentDeleted) {
-            parentCheckTimeout = setTimeout(startParentCheck, 30000);
+            parentCheckTimeout = setTimeout(checkPeriodically, 30000);
         }
     };
 
     try {
-        startParentCheck();
+        await checkParentDeleted();
+        if (parentDeleted) {
+            console.log('[INFO] 処理開始前に親スレッドの削除を検知したため、処理を中止します。');
+            await client.chat.delete({ channel: event.channel, ts: pending.ts });
+            return;
+        }
+
+        checkPeriodically();
 
         const response = await fetch("https://dify.app.uzabase.com/v1/chat-messages", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.DIFY_API_KEY}` },
             body: JSON.stringify({
-                inputs: {
-                    "uploaded_files": files || []
-                },
+                inputs: { "uploaded_files": files || [] },
                 query: userText,
                 response_mode: "streaming",
                 conversation_id: conversationId,
@@ -122,7 +136,8 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
 
         for await (const chunk of response.body) {
             if (parentDeleted) {
-                throw new Error('親スレッドが削除されたため投稿を中断します');
+                console.log('[INFO] ストリーミング中に親スレッドの削除を検知したため、処理を中断します。');
+                break;
             }
             const chunkStr = chunk.toString();
             const lines = chunkStr.split('\n').filter(line => line.startsWith('data: '));
@@ -131,30 +146,51 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
                     const jsonData = JSON.parse(line.substring(6));
                     if (jsonData.answer) { fullAnswer += jsonData.answer; }
                     if (jsonData.conversation_id && !newConversationId) { newConversationId = jsonData.conversation_id; }
-                } catch (e) {
-                    // JSONパースエラーは無視
-                }
+                } catch (e) { /* JSONパースエラーは無視 */ }
             }
+
             if (Date.now() - lastUpdateTime > updateInterval && !parentDeleted) {
                 if (fullAnswer.trim().length > 0) {
                     const answerText = formatForSlack(fullAnswer.trim());
                     const messages = splitMessage(answerText);
                     if (messages[0] !== lastUpdateText) {
-                        const blocksToUpdate = convertDifyAnswerToSlackBlocks(messages[0]);
-                        await client.chat.update({
-                            channel: event.channel,
-                            ts: pending.ts,
-                            text: messages[0],
-                            blocks: blocksToUpdate,
-                            thread_ts: threadTs
-                        });
-                        lastUpdateText = messages[0];
+                        try {
+                            await client.chat.update({
+                                channel: event.channel,
+                                ts: pending.ts,
+                                text: messages[0],
+                                blocks: convertDifyAnswerToSlackBlocks(messages[0]),
+                                thread_ts: threadTs
+                            });
+                            lastUpdateText = messages[0];
+                        } catch (e) {
+                            // ★ 修正点: chat.updateのエラーを捕捉し、スレッドが見つからない場合は処理を中断
+                            if (e.data && e.data.error === 'thread_not_found') {
+                                parentDeleted = true;
+                                console.log('[INFO] スレッド削除を検知 (chat.updateエラー)。ストリーミングを中断します。');
+                                break; // for-awaitループを抜ける
+                            } else {
+                                throw e; // その他のエラーは再スロー
+                            }
+                        }
                     }
                     lastUpdateTime = Date.now();
                 }
             }
         }
 
+        if (parentDeleted) {
+            console.log('[INFO] 最終投稿前に親スレッドの削除を検知したため、投稿を中止します。');
+            try {
+                await client.chat.delete({ channel: event.channel, ts: pending.ts });
+            } catch (deleteError) {
+                if (deleteError.data && deleteError.data.error !== 'message_not_found') {
+                    console.warn('[WARN] 仮メッセージの削除に失敗しました:', deleteError.message);
+                }
+            }
+            return;
+        }
+        
         if (newConversationId) {
             conversationStore[conversationKey] = newConversationId;
             console.log(`[INFO] 新しい会話ID(${newConversationId})をキー(${conversationKey})で保存しました。`);
@@ -163,7 +199,7 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
         const answerText = formatForSlack(fullAnswer.trim() || "（AIから有効な回答を得られませんでした）");
         const messages = splitMessage(answerText);
 
-        if (!parentDeleted) {
+        try {
             const finalBlocksForFirstPart = convertDifyAnswerToSlackBlocks(messages[0]);
             if (messages.length === 1) {
                 finalBlocksForFirstPart.push({ "type": "divider" });
@@ -175,37 +211,60 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
                 blocks: finalBlocksForFirstPart,
                 thread_ts: threadTs
             });
-        }
-
-        for (let i = 1; i < messages.length; i++) {
-            if (parentDeleted) break;
-            const blocksForSubsequentPart = convertDifyAnswerToSlackBlocks(messages[i]);
-            if (i === messages.length - 1) {
-                blocksForSubsequentPart.push({ "type": "divider" });
+        } catch (e) {
+            if (e.data && e.data.error === 'thread_not_found') {
+                console.log('[INFO] スレッド削除を検知 (final chat.updateエラー)。処理を中止します。');
+                return;
+            } else {
+                throw e;
             }
-            await client.chat.postMessage({
-                channel: event.channel,
-                text: messages[i],
-                blocks: blocksForSubsequentPart,
-                thread_ts: threadTs
-            });
+        }
+        
+        for (let i = 1; i < messages.length; i++) {
+            try {
+                const blocksForSubsequentPart = convertDifyAnswerToSlackBlocks(messages[i]);
+                if (i === messages.length - 1) {
+                    blocksForSubsequentPart.push({ "type": "divider" });
+                }
+                await client.chat.postMessage({
+                    channel: event.channel,
+                    text: messages[i],
+                    blocks: blocksForSubsequentPart,
+                    thread_ts: threadTs
+                });
+            } catch (e) {
+                if (e.data && e.data.error === 'thread_not_found') {
+                    console.log('[INFO] スレッド削除を検知 (chat.postMessageエラー)。後続の投稿を中止します。');
+                    break; // forループを抜ける
+                } else {
+                    throw e;
+                }
+            }
         }
 
-        if (!parentDeleted) {
-            console.log(`[INFO] Difyからの回答をスレッド(${threadTs})に投稿しました。`);
-        }
+        console.log(`[INFO] Difyからの回答をスレッド(${threadTs})に投稿しました。`);
 
     } catch (error) {
         console.error('[ERROR] Dify連携処理中にエラーが発生しました:', error);
-        await client.chat.postMessage({
-            channel: event.channel,
-            text: `すみません、AIとの連携処理でエラーが発生しました！\n\`\`\`${error.message}\`\`\``,
-            thread_ts: threadTs
-        });
+        if (!parentDeleted) {
+            try {
+                await client.chat.update({
+                    channel: event.channel,
+                    ts: pending.ts,
+                    text: `すみません、AIとの連携処理でエラーが発生しました！\n\`\`\`${error.message}\`\`\``,
+                    blocks: [],
+                });
+            } catch (postError) {
+                console.error(`[ERROR] エラーメッセージのSlackへの投稿に失敗しました: ${postError.message}`);
+            }
+        } else {
+            console.log('[INFO] 親スレッドが削除されていたため、エラーメッセージの投稿はスキップします。');
+        }
     } finally {
         if (parentCheckTimeout) clearTimeout(parentCheckTimeout);
     }
 }
+
 
 // Slackの投稿上限でメッセージを分割する関数
 function splitMessage(text, maxBytes = 3900) {
@@ -300,7 +359,7 @@ async function uploadFileToDify(fileBuffer, fileName, user, difyApiKey) {
 }
 
 /**
- * ★ 新規追加: ファイルのMIMEタイプからDify用のファイルタイプを決定するヘルパー関数
+ * ファイルのMIMEタイプからDify用のファイルタイプを決定するヘルパー関数
  * @param {string} mimetype - ファイルのMIMEタイプ (e.g., 'image/png', 'application/pdf')
  * @returns {string} 'image', 'audio', 'video', または 'document'
  */
@@ -313,7 +372,7 @@ function getDifyFileType(mimetype) {
 }
 
 /**
- * ★ 修正: 複数のローカルファイルのアップロードをテストする関数
+ * 複数のローカルファイルのアップロードをテストする関数
  * @param {Array<string>} localFilePaths - テストしたいローカルファイルのパスの配列
  */
 async function testLocalFileUpload(localFilePaths) {
@@ -339,7 +398,7 @@ async function testLocalFileUpload(localFilePaths) {
 
         console.log('[TEST] DifyチャットAPIにテストクエリを送信します...');
         const testQuery = `アップロードしたファイル群について、それぞれ内容を要約してください。`;
-         console.log(difyFilesPayload);
+        console.log(difyFilesPayload);
         
         const response = await fetch("https://dify.app.uzabase.com/v1/chat-messages", {
             method: "POST",
@@ -401,7 +460,6 @@ app.message(async ({ message, client, context, logger }) => {
                     const difyUploadResult = await uploadFileToDify(fileBuffer, file.name, message.user, process.env.DIFY_API_KEY);
 
                     // 3. Dify API用のペイロードを作成
-                    // ★ 修正点: MIMEタイプに基づいてファイルタイプを動的に決定
                     const fileType = getDifyFileType(file.mimetype);
                     return {
                         type: fileType,
