@@ -1,20 +1,11 @@
 require('dotenv').config();
 const { App } = require('@slack/bolt');
 
-// 会話履歴を保存するオブジェクト（ユーザーIDをキーとする）
-const conversationHistory = {};
-
-// 各ユーザーの最終活動時刻を記録
-const lastActivityTime = {};
-
 // 処理中のユーザーを記録（重複防止）
 const processingUsers = new Set();
 
 // エラー処理済みのメッセージを記録（重複エラー防止）
 const errorHandledMessages = new Set();
-
-// 自動リセットの間隔（ミリ秒）：1時間 = 60 * 60 * 1000
-const AUTO_RESET_INTERVAL = 60 * 60 * 1000;
 
 // 環境変数からSlackトークンを読み込み
 const app = new App({
@@ -135,8 +126,6 @@ app.message(async ({ message, client, event, say }) => {
     if (userText === '' || 
         userText.includes('相談') || 
         userText.includes('質問') || 
-        userText.includes('聞きたい') ||
-        userText.includes('教えて') ||
         userText.length < 10) {
       
       const threadTs = message.subtype === 'message_changed' ? actualMessage.ts : message.ts;
@@ -210,23 +199,8 @@ app.action('submit_consultation', async ({ ack, body, client }) => {
     
     processingUsers.add(userKey);
     
-    // 現在時刻を記録
-    const currentTime = Date.now();
-    
-    // 最終活動時刻をチェックして、1時間経過していれば自動リセット
-    if (lastActivityTime[userId]) {
-      const timeDiff = currentTime - lastActivityTime[userId];
-      if (timeDiff > AUTO_RESET_INTERVAL) {
-        delete conversationHistory[userId];
-        console.log(`ユーザー ${userId} の会話履歴を自動リセット（${Math.round(timeDiff / 1000 / 60)}分経過）`);
-      }
-    }
-    
-    // 最終活動時刻を更新
-    lastActivityTime[userId] = currentTime;
-        
-    // ユーザーの会話履歴を取得（なければ新規作成）
-    let conversationId = conversationHistory[userId] || "";
+    // Dify変数代入に変更: conversation_idは空文字で開始（Difyが管理）
+    let conversationId = "";
 
     // バックグラウンドで非同期処理を実行
     processConsultationInBackground(
@@ -269,23 +243,8 @@ async function handleDirectConsultation(userText, message, client) {
   
   processingUsers.add(userKey);
   
-  // 現在時刻を記録
-  const currentTime = Date.now();
-  
-  // 最終活動時刻をチェックして、1時間経過していれば自動リセット
-  if (lastActivityTime[userId]) {
-    const timeDiff = currentTime - lastActivityTime[userId];
-    if (timeDiff > AUTO_RESET_INTERVAL) {
-      delete conversationHistory[userId];
-      console.log(`ユーザー ${userId} の会話履歴を自動リセット（${Math.round(timeDiff / 1000 / 60)}分経過）`);
-    }
-  }
-  
-  // 最終活動時刻を更新
-  lastActivityTime[userId] = currentTime;
-      
-  // ユーザーの会話履歴を取得（なければ新規作成）
-  let conversationId = conversationHistory[userId] || "";
+  // Dify変数代入に変更: conversation_idは空文字で開始（Difyが管理）
+  let conversationId = "";
 
   // 初回投稿（"回答中..."のプレースホルダー）
   const threadTs = message.subtype === 'message_changed' ? message.message.ts : message.ts;
@@ -338,7 +297,6 @@ function determineConsultationCategory(userText) {
   return 'その他';
 }
 
-
 // バックグラウンド処理を分離した関数
 async function processConsultationInBackground(userKey, userText, consultationCategory, conversationId, userId, channelId, client, initialMessageTs) {
   try {
@@ -352,6 +310,7 @@ async function processConsultationInBackground(userKey, userText, consultationCa
     console.log(`カテゴリ: ${consultationCategory}`);
 
     // Dify APIへリクエスト送信（ストリーミング対応）
+    // conversation_idが空の場合、Difyが新しい会話として処理し、ユーザーIDベースで履歴管理
     const response = await fetch("https://dify.app.uzabase.com/v1/chat-messages", {
       method: "POST",
       headers: {
@@ -364,8 +323,8 @@ async function processConsultationInBackground(userKey, userText, consultationCa
         },
         query: userText,
         response_mode: "streaming",
-        conversation_id: conversationId,
-        user: userId
+        conversation_id: conversationId, // 空文字の場合、Difyが自動管理
+        user: userId // Difyがユーザー単位で会話履歴を管理
       })
     });
 
@@ -378,7 +337,6 @@ async function processConsultationInBackground(userKey, userText, consultationCa
     const decoder = new TextDecoder();
     
     let fullAnswer = '';
-    let conversationIdFromStream = '';
     let updateCounter = 0;
     let lastUpdateTime = Date.now();
 
@@ -429,11 +387,6 @@ async function processConsultationInBackground(userKey, userText, consultationCa
                 console.log('Message end event received');
               }
               
-              // 会話IDの取得
-              if (data.conversation_id) {
-                conversationIdFromStream = data.conversation_id;
-              }
-              
               // レスポンスが空の場合の処理
               if (!data.event && data.answer && !fullAnswer) {
                 fullAnswer = data.answer;
@@ -469,11 +422,7 @@ async function processConsultationInBackground(userKey, userText, consultationCa
       throw streamError;
     }
 
-    // 新しい会話IDを保存
-    if (conversationIdFromStream) {
-      conversationHistory[userId] = conversationIdFromStream;
-      console.log(`会話ID更新: ${conversationIdFromStream}`);
-    }
+    console.log("Dify変数代入により会話履歴はDify側で自動管理されます");
 
   } catch (error) {
     console.error("Background processing error:", error);
@@ -520,50 +469,9 @@ function removeMarkdownMarkup(text) {
     .trim();
 }
 
-// 会話履歴をリセットするコマンド
-app.message(/^リセット$|^reset$|^新しい会話$/i, async ({ message, client }) => {
-  try {
-    const userId = message.user;
-    delete conversationHistory[userId];
-    delete lastActivityTime[userId];
-    console.log(`ユーザー ${userId} の会話履歴を手動リセット`);
-    
-    await client.chat.postMessage({
-      channel: message.channel,
-      text: "会話履歴をリセットしました！新しい会話を始めましょう。",
-      thread_ts: message.ts
-    });
-  } catch (err) {
-    console.error("Error resetting conversation:", err);
-  }
-});
-
-// 定期的な自動リセットチェック（5分ごと）
-setInterval(() => {
-  const currentTime = Date.now();
-  const usersToReset = [];
-  
-  for (const userId in lastActivityTime) {
-    const timeDiff = currentTime - lastActivityTime[userId];
-    if (timeDiff > AUTO_RESET_INTERVAL) {
-      usersToReset.push(userId);
-    }
-  }
-  
-  usersToReset.forEach(userId => {
-    delete conversationHistory[userId];
-    delete lastActivityTime[userId];
-    console.log(`ユーザー ${userId} の会話履歴を定期自動リセット`);
-  });
-  
-  if (usersToReset.length > 0) {
-    console.log(`${usersToReset.length}名のユーザーの会話履歴を自動リセットしました`);
-  }
-}, 5 * 60 * 1000);
-
 // アプリを起動
 (async () => {
   await app.start();
   console.log('⚡️ Bot app is running!');
-  console.log('会話履歴機能が有効です（Block Kit UI対応）');
+  console.log('Dify変数代入による会話履歴管理が有効です（Block Kit UI対応）');
 })();
