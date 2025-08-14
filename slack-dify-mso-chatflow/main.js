@@ -34,7 +34,7 @@ app.event('app_mention', async ({ event, say }) => {
 
   // そのスレッドに紐づくconversation_idを参照、なければ空
   let conversation_id = convMap[thread_ts] ?? "";
-
+  
   // メンション除去
   const cleanText = removeBotMention(event.text, botUserId);
 
@@ -64,6 +64,7 @@ app.event('app_mention', async ({ event, say }) => {
     if (response.data.conversation_id) {
       convMap[thread_ts] = response.data.conversation_id;
     }
+
 
     await say({
       text: response.data.answer || "Difyから応答がありませんでした。",
