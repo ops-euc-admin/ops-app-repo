@@ -1,11 +1,17 @@
 require('dotenv').config();
 const { App } = require('@slack/bolt');
 
-// 処理中のユーザーを記録（重複防止）
+// 処理中のユーザーを記録（重複防止）- これは残す
 const processingUsers = new Set();
 
-// エラー処理済みのメッセージを記録（重複エラー防止）
+// エラー処理済みのメッセージを記録（重複エラー防止）- これは残す
 const errorHandledMessages = new Set();
+
+// ユーザーごとのconversation_idを保存するMap（メモリ内）
+const userConversations = new Map(); // userId -> conversation_id
+
+// カテゴリー履歴を管理するMap
+const userCategoryHistory = new Map(); // userId -> [category1, category2, ...]
 
 // 環境変数からSlackトークンを読み込み
 const app = new App({
@@ -24,6 +30,28 @@ const CONSULTATION_CATEGORIES = [
   { text: "ERプランについて", value: "ERプランについて" },
   { text: "その他", value: "その他" }
 ];
+
+// カテゴリー履歴を取得する関数
+function getUserCategoryHistory(userId) {
+  const history = userCategoryHistory.get(userId) || [];
+  return history.join(" → ") || "初回相談";
+}
+
+// カテゴリー履歴を更新する関数
+function updateCategoryHistory(userId, newCategory) {
+  const history = userCategoryHistory.get(userId) || [];
+  
+  // 直近3件のカテゴリーを保持（重複除去）
+  if (!history.includes(newCategory)) {
+    history.push(newCategory);
+    if (history.length > 3) {
+      history.shift(); // 古いものを削除
+    }
+    userCategoryHistory.set(userId, history);
+  }
+  
+  console.log(`📝 ${userId} のカテゴリー履歴: ${getUserCategoryHistory(userId)}`);
+}
 
 // Block Kit UIを生成する関数
 function createConsultationBlocks() {
@@ -199,8 +227,9 @@ app.action('submit_consultation', async ({ ack, body, client }) => {
     
     processingUsers.add(userKey);
     
-    // Dify変数代入に変更: conversation_idは空文字で開始（Difyが管理）
-    let conversationId = "";
+    // ユーザーの既存conversation_idを取得（なければ空文字）
+    let conversationId = userConversations.get(userId) || "";
+    console.log(`📱 ユーザー ${userId} の既存conversation_id: "${conversationId}"`);
 
     // バックグラウンドで非同期処理を実行
     processConsultationInBackground(
@@ -243,8 +272,9 @@ async function handleDirectConsultation(userText, message, client) {
   
   processingUsers.add(userKey);
   
-  // Dify変数代入に変更: conversation_idは空文字で開始（Difyが管理）
-  let conversationId = "";
+  // ユーザーの既存conversation_idを取得（なければ空文字）
+  let conversationId = userConversations.get(userId) || "";
+  console.log(`📱 ユーザー ${userId} の既存conversation_id: "${conversationId}"`);
 
   // 初回投稿（"回答中..."のプレースホルダー）
   const threadTs = message.subtype === 'message_changed' ? message.message.ts : message.ts;
@@ -306,11 +336,16 @@ async function processConsultationInBackground(userKey, userText, consultationCa
       return;
     }
 
-    console.log(`バックグラウンド処理開始: ${userKey}`);
-    console.log(`カテゴリ: ${consultationCategory}`);
+    // カテゴリー履歴を更新
+    updateCategoryHistory(userId, consultationCategory);
 
-    // Dify APIへリクエスト送信（ストリーミング対応）
-    // conversation_idが空の場合、Difyが新しい会話として処理し、ユーザーIDベースで履歴管理
+    // 処理開始ログ（詳細版）
+    console.log(`🔍 会話開始 - ユーザー: ${userId}`);
+    console.log(`📂 現在のカテゴリー: ${consultationCategory}`);
+    console.log(`💬 conversation_id: "${conversationId}"`);
+    console.log(`📚 カテゴリー履歴: ${getUserCategoryHistory(userId)}`);
+
+    // Dify APIへリクエスト送信（拡張版）
     const response = await fetch("https://dify.app.uzabase.com/v1/chat-messages", {
       method: "POST",
       headers: {
@@ -319,12 +354,15 @@ async function processConsultationInBackground(userKey, userText, consultationCa
       },
       body: JSON.stringify({
         inputs: {
-          consultation_category: consultationCategory
+          consultation_category: consultationCategory,
+          category_history: getUserCategoryHistory(userId),
+          is_continuation: conversationId !== "",
+          user_context: `ユーザー${userId}の${conversationId ? '継続' : '新規'}相談`
         },
         query: userText,
         response_mode: "streaming",
-        conversation_id: conversationId, // 空文字の場合、Difyが自動管理
-        user: userId // Difyがユーザー単位で会話履歴を管理
+        conversation_id: conversationId,
+        user: userId
       })
     });
 
@@ -355,7 +393,13 @@ async function processConsultationInBackground(userKey, userText, consultationCa
               if (jsonStr.trim() === '' || jsonStr.trim() === '[DONE]') continue;
               
               const data = JSON.parse(jsonStr);
-              
+
+              // conversation_idを保存（初回または更新時）
+              if (data.conversation_id) {
+                userConversations.set(userId, data.conversation_id);
+                console.log(`💾 conversation_id保存: ${userId} -> ${data.conversation_id}`);
+              }
+
               // イベントタイプに応じた処理
               if (data.event === 'message' || data.event === 'agent_message') {
                 if (data.answer) {
@@ -415,14 +459,16 @@ async function processConsultationInBackground(userKey, userText, consultationCa
         text: finalText
       });
       
-      console.log(`Final answer length: ${fullAnswer.length}`);
+      // 完了ログ（詳細版）
+      console.log(`✅ 会話完了 - ユーザー: ${userId}`);
+      console.log(`📊 回答長: ${fullAnswer.length}文字`);
+      console.log(`💬 最終conversation_id: ${userConversations.get(userId)}`);
+      console.log(`📋 保存済み会話数: ${userConversations.size}人`);
 
     } catch (streamError) {
       console.error("Streaming error:", streamError);
       throw streamError;
     }
-
-    console.log("Dify変数代入により会話履歴はDify側で自動管理されます");
 
   } catch (error) {
     console.error("Background processing error:", error);
@@ -469,9 +515,26 @@ function removeMarkdownMarkup(text) {
     .trim();
 }
 
+// デバッグ用：現在保存されているconversation_idを表示
+function showUserConversations() {
+  console.log('📋 現在保存されているユーザー会話:');
+  for (const [userId, conversationId] of userConversations.entries()) {
+    console.log(`  ${userId}: ${conversationId}`);
+  }
+}
+
+// デバッグ用：現在保存されているカテゴリー履歴を表示
+function showUserCategories() {
+  console.log('📂 現在保存されているカテゴリー履歴:');
+  for (const [userId, categories] of userCategoryHistory.entries()) {
+    console.log(`  ${userId}: ${categories.join(' → ')}`);
+  }
+}
+
 // アプリを起動
 (async () => {
   await app.start();
   console.log('⚡️ Bot app is running!');
-  console.log('Dify変数代入による会話履歴管理が有効です（Block Kit UI対応）');
+  console.log('📚 カテゴリー履歴管理機能が有効です');
+  console.log('💬 conversation_id継続機能が有効です');
 })();
