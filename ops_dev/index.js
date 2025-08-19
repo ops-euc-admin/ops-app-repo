@@ -150,11 +150,18 @@ app.message(async ({ message, client, event, say }) => {
       userText = userText.replace(`<@${botUserId}>`, '').trim();
     }
 
-    // 「相談」や「質問」などのキーワードが含まれているか、または空の場合はBlock Kit UIを表示
+    // 曖昧な表現のパターンを定義
+    const vaguePatterns = [
+      '質問', '相談', '教えて', '聞きたい',
+      '質問です', '質問があります', '質問したいです',
+      '相談です', '相談があります', '相談したいです',
+      '分からない', '困ってます', 'ヘルプ',
+      'お疲れ様'
+    ];
+
+    // 空文字または曖昧な表現の場合のみBlock Kit UIを表示
     if (userText === '' || 
-        userText.includes('相談') || 
-        userText.includes('質問') || 
-        userText.length < 10) {
+        vaguePatterns.includes(userText.trim())) {
       
       const threadTs = message.subtype === 'message_changed' ? actualMessage.ts : message.ts;
       
