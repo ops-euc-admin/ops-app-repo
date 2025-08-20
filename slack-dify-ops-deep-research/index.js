@@ -36,12 +36,6 @@ function convertDifyAnswerToSlackBlocks(textContent) {
 }
 
 /**
- * ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
- *
- * 修正後のコアロジック
- * 親スレッドが削除された場合の処理を改善しました。
- *
- * ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
  * DifyチャットAPIを呼び出し、Slackに回答を投稿する共通処理
  * @param {object} params - パラメータオブジェクト
  * @param {object} params.event - Slackイベントオブジェクト
@@ -164,13 +158,12 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
                             });
                             lastUpdateText = messages[0];
                         } catch (e) {
-                            // ★ 修正点: chat.updateのエラーを捕捉し、スレッドが見つからない場合は処理を中断
                             if (e.data && e.data.error === 'thread_not_found') {
                                 parentDeleted = true;
                                 console.log('[INFO] スレッド削除を検知 (chat.updateエラー)。ストリーミングを中断します。');
-                                break; // for-awaitループを抜ける
+                                break;
                             } else {
-                                throw e; // その他のエラーは再スロー
+                                throw e;
                             }
                         }
                     }
@@ -235,7 +228,7 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
             } catch (e) {
                 if (e.data && e.data.error === 'thread_not_found') {
                     console.log('[INFO] スレッド削除を検知 (chat.postMessageエラー)。後続の投稿を中止します。');
-                    break; // forループを抜ける
+                    break;
                 } else {
                     throw e;
                 }
@@ -428,65 +421,82 @@ async function testLocalFileUpload(localFilePaths) {
 }
 
 
-// メンション、DM、ファイル共有を単一のハンドラで処理
-app.message(async ({ message, client, context, logger }) => {
+// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+//
+// 修正後のイベント処理ロジック
+//
+// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+/**
+ * メンションやDMを処理し、Dify APIを呼び出す共通関数
+ * @param {object} params
+ * @param {object} params.event - Slackのイベントペイロード (`app_mention` または `message`)
+ * @param {object} params.client - Slack WebClient
+ * @param {object} params.context - イベントのコンテキスト
+ * @param {object} params.logger - ロガー
+ */
+async function processEvent({ event, client, context, logger }) {
     // ボット自身のメッセージは無視
-    if (message.bot_id) {
+    if (event.bot_id) {
         return;
     }
 
-    // メンション、DM、またはファイル共有があった場合に処理
-    const isDirectMessage = message.channel_type === 'im' || message.channel_type === 'mpim';
-    const isMentioned = message.text && message.text.includes(`<@${context.botUserId}>`);
-    const hasFiles = message.files && message.files.length > 0;
+    let difyFilesPayload = [];
+    const hasFiles = event.files && event.files.length > 0;
 
-    if (isDirectMessage || isMentioned || hasFiles) {
-        let difyFilesPayload = [];
-
-        try {
-            if (hasFiles) {
-                logger.info(`${message.files.length}個のファイルを処理します...`);
-                
-                // Promise.allで全ファイルを並行してアップロード
-                const uploadPromises = message.files.map(async (file) => {
-                    if (!file.url_private_download) {
-                        logger.warn(`ファイル ${file.name} にダウンロードURLがありません。スキップします。`);
-                        return null;
-                    }
-                    // 1. Slackからダウンロード
-                    const fileBuffer = await downloadFile(file.url_private_download, context.botToken);
-
-                    // 2. Difyにアップロード
-                    const difyUploadResult = await uploadFileToDify(fileBuffer, file.name, message.user, process.env.DIFY_API_KEY);
-
-                    // 3. Dify API用のペイロードを作成
-                    const fileType = getDifyFileType(file.mimetype);
-                    return {
-                        type: fileType,
-                        transfer_method: 'local_file',
-                        upload_file_id: difyUploadResult.id
-                    };
-                });
-
-                difyFilesPayload = (await Promise.all(uploadPromises)).filter(p => p !== null);
-                logger.info('全てのファイルのアップロードが完了しました。');
-            }
-
-            // Dify APIを呼び出す
-            await callDifyChatApi({
-                event: message,
-                client: client,
-                files: difyFilesPayload
+    try {
+        if (hasFiles) {
+            logger.info(`${event.files.length}個のファイルを処理します...`);
+            
+            const uploadPromises = event.files.map(async (file) => {
+                if (!file.url_private_download) {
+                    logger.warn(`ファイル ${file.name} にダウンロードURLがありません。スキップします。`);
+                    return null;
+                }
+                const fileBuffer = await downloadFile(file.url_private_download, context.botToken);
+                const difyUploadResult = await uploadFileToDify(fileBuffer, file.name, event.user, process.env.DIFY_API_KEY);
+                const fileType = getDifyFileType(file.mimetype);
+                return {
+                    type: fileType,
+                    transfer_method: 'local_file',
+                    upload_file_id: difyUploadResult.id
+                };
             });
 
-        } catch (error) {
-            logger.error('ファイル処理またはDify連携でエラーが発生しました:', error);
-            await client.chat.postMessage({
-                channel: message.channel,
-                text: `処理中にエラーが発生しました: ${error.message}`,
-                thread_ts: message.thread_ts || message.ts
-            });
+            difyFilesPayload = (await Promise.all(uploadPromises)).filter(p => p !== null);
+            logger.info('全てのファイルのアップロードが完了しました。');
         }
+
+        // Dify APIを呼び出す
+        await callDifyChatApi({
+            event: event,
+            client: client,
+            files: difyFilesPayload
+        });
+
+    } catch (error) {
+        logger.error('ファイル処理またはDify連携でエラーが発生しました:', error);
+        await client.chat.postMessage({
+            channel: event.channel,
+            text: `処理中にエラーが発生しました: ${error.message}`,
+            thread_ts: event.thread_ts || event.ts
+        });
+    }
+}
+
+// 修正点 1: チャンネルでメンションされた時のイベント (`app_mention`) をリッスン
+// これがチャンネルでのメンションに反応するための主要なハンドラーです。
+app.event('app_mention', async ({ event, client, context, logger }) => {
+    await processEvent({ event, client, context, logger });
+});
+
+// 修正点 2: ダイレクトメッセージ(DM)をリッスン
+// このハンドラーはDMでの会話に限定されます。
+app.message(async ({ message, client, context, logger }) => {
+    // メッセージがDM (`im`) の場合のみ処理する
+    if (message.channel_type === 'im') {
+        // `message` オブジェクトを `event` として共通処理関数に渡す
+        await processEvent({ event: message, client, context, logger });
     }
 });
 
