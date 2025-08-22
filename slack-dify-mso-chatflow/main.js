@@ -26,6 +26,18 @@ function removeBotMention(text, botUserId) {
 // スレッドID(thread_ts) <-> Dify conversation_id のマッピング（インメモリ例）
 const convMap = {};
 
+// 🔄 1時間ごとに古い会話データを削除
+setInterval(() => {
+  const now = Date.now();
+  const oneHour = 60 * 60 * 1000;
+  for (const ts in convMap) {
+    if (now - convMap[ts].updatedAt > oneHour) {
+      delete convMap[ts];
+      console.log(`🗑 conversation expired and deleted (thread_ts=${ts})`);
+    }
+  }
+}, 60 * 60 * 1000); // 1時間ごとにクリーンアップ処理
+
 app.event('app_mention', async ({ event, say }) => {
   if (!botUserId) return;
 
@@ -33,7 +45,10 @@ app.event('app_mention', async ({ event, say }) => {
   const thread_ts = event.thread_ts || event.ts;
 
   // そのスレッドに紐づくconversation_idを参照、なければ空
-  let conversation_id = convMap[thread_ts] ?? "";
+  // ?.はconvMap[thread_ts]がnullもしくはundefinedなのかを確認している。
+  // nullでもundefinedでもなければconversation_idプロパティが呼び出される。
+  let conversation_id = convMap[thread_ts]?.conversation_id ?? "";
+  
   
   // メンション除去
   const cleanText = removeBotMention(event.text, botUserId);
@@ -60,9 +75,12 @@ app.event('app_mention', async ({ event, say }) => {
       }
     );
 
-    // Difyから返却されるconversation_idでconvMapを更新
+    // convMap更新（最後に使った時刻を保存）
     if (response.data.conversation_id) {
-      convMap[thread_ts] = response.data.conversation_id;
+      convMap[thread_ts] = {
+        conversation_id: response.data.conversation_id,
+        updatedAt: Date.now()
+      };
     }
 
 
