@@ -600,10 +600,13 @@ async function processConsultationInBackground(userKey, userText, consultationCa
                     
                     lastUpdateTime = currentTime;
                     
+                    // Markdown記法を除去して更新
+                    const cleanAnswer = removeMarkdownMarkup(fullAnswer);
+                    
                     await client.chat.update({
                       channel: channelId,
                       ts: initialMessageTs,
-                      text: fullAnswer || "回答を生成中..."
+                      text: cleanAnswer || "回答を生成中..."
                     });
                   }
                 }
@@ -614,10 +617,11 @@ async function processConsultationInBackground(userKey, userText, consultationCa
               // レスポンスが空の場合の処理
               if (!data.event && data.answer && !fullAnswer) {
                 fullAnswer = data.answer;
+                const cleanAnswer = removeMarkdownMarkup(fullAnswer);
                 await client.chat.update({
                   channel: channelId,
                   ts: initialMessageTs,
-                  text: fullAnswer
+                  text: cleanAnswer
                 });
               }
               
@@ -629,8 +633,9 @@ async function processConsultationInBackground(userKey, userText, consultationCa
         }
       }
       
-      // 最終的な回答で更新
-      const finalText = fullAnswer.trim() || "（エラーにより回答できません）";
+      // 最終的な回答で更新（Markdown記法を除去）
+      const cleanFinalAnswer = removeMarkdownMarkup(fullAnswer);
+      const finalText = cleanFinalAnswer.trim() || "（エラーにより回答できません）";
       await client.chat.update({
         channel: channelId,
         ts: initialMessageTs,
@@ -670,6 +675,27 @@ async function processConsultationInBackground(userKey, userText, consultationCa
       errorHandledMessages.delete(userKey);
     }, 30000); // 30秒後に削除
   }
+}
+
+// Markdownの記法を除去する関数
+function removeMarkdownMarkup(text) {
+  if (!text) return text;
+  
+  return text
+    // 太字記法を除去
+    .replace(/\*\*(.*?)\*\*/g, '$1')  // **text** -> text
+    .replace(/\*(.*?)\*/g, '$1')      // *text* -> text
+    // 見出し記法を除去
+    .replace(/^#{1,6}\s*/gm, '')      // # ## ### etc. -> (空文字)
+    // リスト記法を除去
+    .replace(/^\s*\*\s+/gm, '')       // * item -> item
+    .replace(/^\s*-\s+/gm, '')        // - item -> item
+    .replace(/^\s*\+\s+/gm, '')       // + item -> item
+    // 番号付きリストを除去
+    .replace(/^\s*\d+\.\s+/gm, '')    // 1. item -> item
+    // 複数の改行を整理
+    .replace(/\n{3,}/g, '\n\n')       // 3個以上の改行を2個に
+    .trim();
 }
 
 // デバッグ用：現在保存されているconversation_idを表示
