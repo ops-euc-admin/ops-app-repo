@@ -600,8 +600,8 @@ async function processConsultationInBackground(userKey, userText, consultationCa
                     
                     lastUpdateTime = currentTime;
                     
-                    // Markdown記法を除去して更新
-                    const cleanAnswer = removeMarkdownMarkup(fullAnswer);
+                    // Markdown記法をSlack記法に変換して更新
+                    const cleanAnswer = convertMarkdownToSlack(fullAnswer);
                     
                     await client.chat.update({
                       channel: channelId,
@@ -617,7 +617,7 @@ async function processConsultationInBackground(userKey, userText, consultationCa
               // レスポンスが空の場合の処理
               if (!data.event && data.answer && !fullAnswer) {
                 fullAnswer = data.answer;
-                const cleanAnswer = removeMarkdownMarkup(fullAnswer);
+                const cleanAnswer = convertMarkdownToSlack(fullAnswer);
                 await client.chat.update({
                   channel: channelId,
                   ts: initialMessageTs,
@@ -633,9 +633,9 @@ async function processConsultationInBackground(userKey, userText, consultationCa
         }
       }
       
-      // 最終的な回答で更新（Markdown記法を除去）
-      const cleanFinalAnswer = removeMarkdownMarkup(fullAnswer);
-      const finalText = cleanFinalAnswer.trim() || "（エラーにより回答できません）";
+      // Markdown記法をSlack記法に変換して更新
+      const cleanAnswer = convertMarkdownToSlack(fullAnswer);
+      const finalText = cleanAnswer.trim() || "（エラーにより回答できません）";
       await client.chat.update({
         channel: channelId,
         ts: initialMessageTs,
@@ -677,25 +677,153 @@ async function processConsultationInBackground(userKey, userText, consultationCa
   }
 }
 
-// Markdownの記法を除去する関数
+// より包括的なMarkdown→Slack変換関数
 function removeMarkdownMarkup(text) {
   if (!text) return text;
   
   return text
-    // 太字記法を除去
-    .replace(/\*\*(.*?)\*\*/g, '$1')  // **text** -> text
-    .replace(/\*(.*?)\*/g, '$1')      // *text* -> text
-    // 見出し記法を除去
-    .replace(/^#{1,6}\s*/gm, '')      // # ## ### etc. -> (空文字)
-    // リスト記法を除去
-    .replace(/^\s*\*\s+/gm, '')       // * item -> item
-    .replace(/^\s*-\s+/gm, '')        // - item -> item
-    .replace(/^\s*\+\s+/gm, '')       // + item -> item
-    // 番号付きリストを除去
-    .replace(/^\s*\d+\.\s+/gm, '')    // 1. item -> item
+    // コードブロックを先に処理（言語指定を除去）
+    .replace(/```[\w+]*\n([\s\S]*?)```/g, '```\n$1```')
+    
+    // インラインコードを保持（Slackでもサポート）
+    // .replace(/`([^`]+)`/g, '`$1`') // そのまま保持
+    
+    // 太字記法をSlack記法に変換
+    .replace(/\*\*(.*?)\*\*/g, '*$1*')    // **text** -> *text*
+    .replace(/__(.*?)__/g, '*$1*')        // __text__ -> *text*
+    
+    // 斜体記法をSlack記法に変換
+    .replace(/(?<!\*)\*([^*\s][^*]*?[^*\s])\*(?!\*)/g, '_$1_')  // *text* -> _text_ (太字と区別)
+    .replace(/_([^_\s][^_]*?[^_\s])_/g, '_$1_')                 // _text_ -> _text_ (そのまま)
+    
+    // 見出し記法をSlackの太字に変換
+    .replace(/^#{1}\s+(.+)$/gm, '*$1*')   // # H1 -> *H1*
+    .replace(/^#{2,6}\s+(.+)$/gm, '*$1*') // ## H2-H6 -> *H1*
+    
+    // リンク記法を変換
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')  // [text](url) -> <url|text>
+    
+    // リスト記法をSlack記法に変換
+    .replace(/^\s*[\*\-\+]\s+(.+)$/gm, '• $1')       // * - + item -> • item
+    .replace(/^\s*(\d+)\.\s+(.+)$/gm, '$1. $2')      // 1. item -> 1. item (数字リストはそのまま)
+    
+    // 引用記法を変換
+    .replace(/^>\s+(.+)$/gm, '> $1')      // > quote -> > quote (Slackでも同じ)
+    
+    // 水平線を変換
+    .replace(/^(\-{3,}|\*{3,}|_{3,})$/gm, '---')  // --- *** ___ -> ---
+    
+    // 取り消し線を変換
+    .replace(/~~(.+?)~~/g, '~$1~')        // ~~text~~ -> ~text~
+    
+    // テーブル記法を除去（Slackでは複雑なテーブルは表示できない）
+    .replace(/\|.*?\|/g, (match) => {
+      // テーブルの区切り行を除去
+      if (match.match(/^[\|\-\s:]+$/)) return '';
+      // テーブルの内容はパイプを除去してスペース区切りに
+      return match.replace(/\|/g, ' ').trim();
+    })
+    
+    // HTMLタグを除去
+    .replace(/<[^>]*>/g, '')
+    
+    // エスケープ文字を処理
+    .replace(/\\(.)/g, '$1')              // \* -> *
+    
     // 複数の改行を整理
-    .replace(/\n{3,}/g, '\n\n')       // 3個以上の改行を2個に
+    .replace(/\n{3,}/g, '\n\n')           // 3個以上の改行を2個に
+    .replace(/^\s+|\s+$/g, '')            // 先頭末尾の空白を除去
     .trim();
+}
+
+// より高機能な変換関数（Block Kit使用時）
+function markdownToSlackBlocks(text) {
+  if (!text) return [];
+  
+  const blocks = [];
+  const sections = text.split(/\n\s*\n/);
+  
+  for (const section of sections) {
+    if (section.trim() === '') continue;
+    
+    // コードブロックの場合
+    if (section.match(/```/)) {
+      const codeMatch = section.match(/```[\w]*\n?([\s\S]*?)```/);
+      if (codeMatch) {
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `\`\`\`\n${codeMatch[1]}\n\`\`\``
+          }
+        });
+        continue;
+      }
+    }
+    
+    // 通常のテキストセクション
+    const cleanText = removeMarkdownMarkup(section);
+    if (cleanText.length > 3000) {
+      // 長いテキストは分割
+      const chunks = cleanText.match(/.{1,3000}(\s|$)/g) || [cleanText];
+      chunks.forEach(chunk => {
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: chunk.trim()
+          }
+        });
+      });
+    } else {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: cleanText
+        }
+      });
+    }
+  }
+  
+  return blocks;
+}
+
+// 特定のMarkdown要素をSlack記法に変換する個別関数
+function convertMarkdownToSlack(text) {
+  if (!text) return text;
+  
+  try {
+    // 段階的に変換
+    let result = text;
+    
+    // 1. コードブロック（最初に処理）
+    result = result.replace(/```(\w+)?\n([\s\S]*?)```/g, '```\n$2```');
+    
+    // 2. 太字・斜体
+    result = result.replace(/\*\*(.*?)\*\*/g, '*$1*');
+    result = result.replace(/\b_([^_]+)_\b/g, '_$1_');
+    
+    // 3. 見出し
+    result = result.replace(/^# (.+)$/gm, '*🔹 $1*');
+    result = result.replace(/^## (.+)$/gm, '*▪️ $1*');
+    result = result.replace(/^### (.+)$/gm, '*• $1*');
+    result = result.replace(/^#{4,6} (.+)$/gm, '*$1*');
+    
+    // 4. リスト
+    result = result.replace(/^\s*[\*\-\+] (.+)$/gm, '• $1');
+    
+    // 5. リンク
+    result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>');
+    
+    // 6. クリーンアップ
+    result = result.replace(/\n{3,}/g, '\n\n').trim();
+    
+    return result || text; // 変換に失敗した場合は元のテキストを返す
+  } catch (error) {
+    console.error('convertMarkdownToSlack error:', error);
+    return text; // エラーの場合は元のテキストをそのまま返す
+  }
 }
 
 // デバッグ用：現在保存されているconversation_idを表示
