@@ -260,7 +260,7 @@ async function callDifyChatApi({ event, client, overrideText, files }) {
 
 
 // Slackの投稿上限でメッセージを分割する関数
-function splitMessage(text, maxBytes = 3900) {
+function splitMessage(text, maxBytes = 2900) {
     const result = [];
     let buffer = '';
     let bufferBytes = 0;
