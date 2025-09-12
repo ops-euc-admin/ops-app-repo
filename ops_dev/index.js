@@ -559,9 +559,9 @@ function determineConsultationCategory(userText) {
 }
 
 
-// メッセージを分割して送信する関数 (修正版)
-async function sendLongMessage(client, channelId, messageTs, text) {
-  const maxLength = 1800;
+// メッセージを分割して自動送信する関数 (詳細エラーハンドリング付き)
+async function sendLongMessage(client, channelId, messageTs, text, userId = null) {
+  const maxLength = 1200;
 
   if (!text || text.trim() === '') {
     try {
@@ -577,74 +577,195 @@ async function sendLongMessage(client, channelId, messageTs, text) {
   }
 
   const cleanText = convertMarkdownToSlack(text);
+  console.log(`📏 処理対象メッセージ: ${cleanText.length}文字, 制限: ${maxLength}文字`);
 
+  // 短い場合はそのまま表示してUIボタンも追加
   if (cleanText.length <= maxLength) {
     try {
+      console.log('📤 短いメッセージとして直接更新を試行...');
       await client.chat.update({
         channel: channelId,
         ts: messageTs,
         text: cleanText
       });
+      console.log('✅ 短いメッセージの更新完了');
+      
+      // 短いメッセージの場合もUIボタンを投稿
+      if (userId) {
+        console.log('🔘 UIボタンを追加中...');
+        await addUIButtons(client, channelId, messageTs, userId);
+        console.log('✅ UIボタン追加完了');
+      }
     } catch (e) {
-      console.error("Failed to update single short message:", e);
+      console.error("❌ 短いメッセージの更新でエラー:", {
+        error: e.message,
+        code: e.code,
+        response: e.data,
+        stack: e.stack,
+        channelId,
+        messageTs,
+        textLength: cleanText.length
+      });
     }
     return;
   }
 
-  console.log(`📏 メッセージが長すぎるため分割します: ${cleanText.length}文字`);
+  console.log(`📏 メッセージが長すぎるため自動分割します: ${cleanText.length}文字`);
+  
+  // メッセージを分割
   const parts = [];
   let textToSplit = cleanText;
 
   while (textToSplit.length > 0) {
-    parts.push(textToSplit.substring(0, maxLength));
+    const part = textToSplit.substring(0, maxLength);
+    parts.push(part);
     textToSplit = textToSplit.substring(maxLength);
+    console.log(`📊 分割パート作成: ${part.length}文字 (残り: ${textToSplit.length}文字)`);
   }
 
+  console.log(`📋 分割完了: ${parts.length}個のパートに分割`);
+
   try {
-    const firstPart = parts.shift();
-    const remainingParts = parts;
-
-    if (remainingParts.length > 0) {
-      pendingContinuations.set(messageTs, remainingParts);
-      console.log(`📝 ${remainingParts.length}個の続きを保存 (ts: ${messageTs})`);
-    }
-
-    const blocks = [{
-      type: "section",
-      text: { type: "mrkdwn", text: firstPart }
-    }];
-
-    if (remainingParts.length > 0) {
-      blocks.push({
-        type: "actions",
-        elements: [{
-          type: "button",
-          text: {
-            type: "plain_text",
-            text: `▼ 続きを読む (${remainingParts.length}件)`
-          },
-          action_id: "show_more_continuation",
-          value: messageTs
-        }]
-      });
-    }
-
+    // 最初の部分で元メッセージを更新
+    const firstPart = parts[0];
+    console.log(`📤 最初のパート更新を試行... (${firstPart.length}文字)`);
+    
     await client.chat.update({
       channel: channelId,
       ts: messageTs,
-      text: firstPart.substring(0, 200) + "...",
-      blocks: blocks
+      text: firstPart
     });
 
+    console.log(`✅ 最初の部分を表示完了 (1/${parts.length})`);
+
+    // 残りの部分を順次投稿（自動）
+    for (let i = 1; i < parts.length; i++) {
+      try {
+        console.log(`📤 パート${i + 1}/${parts.length}を投稿中... (${parts[i].length}文字)`);
+        
+        // 少し間隔を空けて投稿
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        const result = await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: messageTs,
+          text: parts[i]
+        });
+        
+        console.log(`✅ パート${i + 1}/${parts.length}を投稿完了`, {
+          messageTs: result.ts,
+          channel: result.channel
+        });
+        
+      } catch (partError) {
+        console.error(`❌ パート${i + 1}の投稿でエラー:`, {
+          error: partError.message,
+          code: partError.code,
+          response: partError.data,
+          stack: partError.stack,
+          partIndex: i + 1,
+          totalParts: parts.length,
+          partLength: parts[i].length,
+          channelId,
+          threadTs: messageTs
+        });
+        
+        // 個別パートでエラーが発生した場合、エラーメッセージを投稿
+        try {
+          await client.chat.postMessage({
+            channel: channelId,
+            thread_ts: messageTs,
+            text: `⚠️ パート${i + 1}の表示でエラーが発生しました。\nエラー詳細: ${partError.message || 'Unknown error'}`
+          });
+        } catch (errorMsgError) {
+          console.error(`❌ エラーメッセージの投稿も失敗:`, {
+            error: errorMsgError.message,
+            code: errorMsgError.code,
+            response: errorMsgError.data
+          });
+        }
+        
+        // エラーが発生した場合、処理を継続するか中断するかを決定
+        if (partError.code === 'rate_limited') {
+          console.log('⏰ レート制限のため3秒待機...');
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          // リトライ
+          try {
+            console.log(`🔄 パート${i + 1}をリトライ中...`);
+            await client.chat.postMessage({
+              channel: channelId,
+              thread_ts: messageTs,
+              text: parts[i]
+            });
+            console.log(`✅ パート${i + 1}のリトライ成功`);
+          } catch (retryError) {
+            console.error(`❌ リトライも失敗:`, retryError);
+            break; // リトライも失敗した場合は中断
+          }
+        } else {
+          // レート制限以外のエラーの場合は中断
+          console.log(`🛑 重大なエラーのため残りのパート投稿を中断`);
+          break;
+        }
+      }
+    }
+
+    console.log('✅ 全ての分割メッセージの投稿処理完了');
+
+    // UIボタンを最下部に投稿
+    if (userId) {
+      try {
+        console.log('🔘 最終UIボタンを追加中...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await addUIButtons(client, channelId, messageTs, userId);
+        console.log('✅ 最終UIボタン追加完了');
+      } catch (buttonError) {
+        console.error('❌ UIボタン追加でエラー:', {
+          error: buttonError.message,
+          code: buttonError.code,
+          response: buttonError.data
+        });
+      }
+    }
+
   } catch (error) {
-    console.error("メッセージの分割送信中にエラーが発生しました:", error);
-    await client.chat.postMessage({
+    const errorDetails = {
+      message: error.message,
+      code: error.code,
+      name: error.name,
+      stack: error.stack,
+      response: error.data,
+      channelId,
+      messageTs,
+      originalTextLength: text.length,
+      cleanTextLength: cleanText.length,
+      partsCount: parts.length,
+      maxLength,
+      timestamp: new Date().toISOString()
+    };
+
+    console.error("❌ メッセージの自動分割送信中にメジャーエラーが発生:", errorDetails);
+    
+    // より詳細なエラーメッセージを投稿
+    let errorMessage = "エラー: 回答の表示中に問題が発生しました。\n";
+        
+    try {
+      await client.chat.postMessage({
         channel: channelId,
         thread_ts: messageTs,
-        text: "エラー: 回答が長すぎるため、完全な表示ができませんでした。"
-    });
+        text: errorMessage
+      });
+    } catch (finalError) {
+      console.error("❌ 最終エラーメッセージの投稿も失敗:", {
+        error: finalError.message,
+        code: finalError.code,
+        response: finalError.data
+      });
+    }
   }
 }
+
 
 
 // バックグラウンド処理を分離した関数（改良版）
