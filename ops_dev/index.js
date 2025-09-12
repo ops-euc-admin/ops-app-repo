@@ -16,6 +16,9 @@ const userCategoryHistory = new Map(); // userId -> [category1, category2, ...]
 // ユーザーの入力内容を一時保存するMap
 const userInputHistory = new Map(); // userId -> { category, text }
 
+// 「続きを読む」の続きを保存する場所を追加
+const pendingContinuations = new Map(); // messageTs -> [残りのメッセージ配列]
+
 // 環境変数からSlackトークンを読み込み
 const app = new App({
   socketMode: true,
@@ -60,6 +63,16 @@ function updateCategoryHistory(userId, newCategory) {
 function saveUserInput(userId, category, text) {
   userInputHistory.set(userId, { category, text });
   console.log(`💾 ${userId} の入力内容を保存: ${category} - ${text.substring(0, 50)}...`);
+}
+
+// Slack mrkdwn対応のメッセージ投稿関数
+async function postSlackMessage(client, channel, text, options = {}) {
+  return await client.chat.postMessage({
+    channel,
+    text,
+    mrkdwn: true,
+    ...options
+  });
 }
 
 // Block Kit UIを生成する関数（前回の入力内容を反映）
@@ -259,7 +272,7 @@ app.action('submit_consultation', async ({ ack, body, client }) => {
 
     console.log(`カテゴリ: ${selectedCategory}, 内容: ${consultationText}`);
 
-    // 確認メッセージを表示（入力内容を表示）
+    // 確認メッセージを表示（ボタンなし）
     await client.chat.postMessage({
       channel: body.channel.id,
       thread_ts: body.message.ts,
@@ -271,43 +284,14 @@ app.action('submit_consultation', async ({ ack, body, client }) => {
             text: `📝 *受け付けました*\n*カテゴリ:* ${selectedCategory}\n*質問内容:* ${consultationText}`
           }
         },
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "回答を生成しています..."
-          }
-        },
-        {
-          type: "actions",
-          elements: [
-            {
-              type: "button",
-              text: {
-                type: "plain_text",
-                text: "🔄 同じ内容で再質問"
-              },
-              action_id: "resubmit_consultation",
-              value: `${selectedCategory}|${consultationText}`
-            },
-            {
-              type: "button",
-              text: {
-                type: "plain_text",
-                text: "✏️ 内容を編集して質問"
-              },
-              action_id: "edit_consultation"
-            }
-          ]
-        }
-      ]
+
+      ],
+      mrkdwn: true
     });
 
-    // 実際の回答生成のための初回投稿
-    const initialMessage = await client.chat.postMessage({
-      channel: body.channel.id,
-      thread_ts: body.message.ts,
-      text: "回答を生成中..."
+    // 実際の回答生成のための初回投稿（動画リアクション付き）
+    const initialMessage = await postSlackMessage(client, body.channel.id, ":arrows_counterclockwise: 回答を生成中...", {
+      thread_ts: body.message.ts
     });
 
     const messageTs = body.message.ts;
@@ -360,11 +344,9 @@ app.action('resubmit_consultation', async ({ ack, body, client }) => {
     const [category, text] = body.actions[0].value.split('|');
     const userId = body.user.id;
     
-    // 新しい回答生成メッセージを投稿
-    const initialMessage = await client.chat.postMessage({
-      channel: body.channel.id,
-      thread_ts: body.message.ts,
-      text: "回答を再生成中..."
+    // 新しい回答生成メッセージを投稿（動画リアクション付き）
+    const initialMessage = await postSlackMessage(client, body.channel.id, ":repeat: 回答を再生成中...", {
+      thread_ts: body.message.ts
     });
 
     // 重複防止キー生成
@@ -413,6 +395,74 @@ app.action('edit_consultation', async ({ ack, body, client }) => {
   }
 });
 
+// 「続きを読む」ボタンがクリックされた時の処理
+app.action('show_more_continuation', async ({ ack, body, client, action }) => {
+  await ack();
+
+  const messageTs = action.value;
+
+  try {
+    const remainingParts = pendingContinuations.get(messageTs);
+
+    if (!remainingParts || remainingParts.length === 0) {
+      // 既に全て表示済みならボタンを消す
+      const originalBlocks = body.message.blocks.filter(b => b.type !== 'actions');
+      await client.chat.update({
+        channel: body.channel.id,
+        ts: messageTs,
+        text: body.message.text,
+        blocks: originalBlocks,
+      });
+      pendingContinuations.delete(messageTs);
+      return;
+    }
+
+    // 次のパートを投稿
+    const nextPart = remainingParts.shift();
+    await client.chat.postMessage({
+      channel: body.channel.id,
+      thread_ts: messageTs,
+      text: nextPart,
+    });
+
+    const originalBlocks = body.message.blocks.filter(b => b.type !== 'actions');
+
+    if (remainingParts.length > 0) {
+      // まだ続きがある場合：ボタンのテキストを更新
+      pendingContinuations.set(messageTs, remainingParts);
+      originalBlocks.push({
+        type: 'actions',
+        elements: [{
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: `▼ 続きを読む (${remainingParts.length}件)`,
+          },
+          action_id: 'show_more_continuation',
+          value: messageTs,
+        }],
+      });
+      await client.chat.update({
+        channel: body.channel.id,
+        ts: messageTs,
+        text: body.message.text,
+        blocks: originalBlocks,
+      });
+    } else {
+      // これが最後のパートだった場合：ボタンを削除
+      pendingContinuations.delete(messageTs);
+      await client.chat.update({
+        channel: body.channel.id,
+        ts: messageTs,
+        text: body.message.text,
+        blocks: originalBlocks,
+      });
+    }
+  } catch (error) {
+    console.error('show_more_continuation action error:', error);
+  }
+});
+
 // 直接的な質問の場合の処理（従来のロジック）
 async function handleDirectConsultation(userText, message, client) {
   const userId = message.user;
@@ -437,9 +487,7 @@ async function handleDirectConsultation(userText, message, client) {
 
   // 初回投稿（"回答中..."のプレースホルダー）
   const threadTs = message.subtype === 'message_changed' ? message.message.ts : message.ts;
-  const initialMessage = await client.chat.postMessage({
-    channel: message.channel,
-    text: "回答を生成中...",
+  const initialMessage = await postSlackMessage(client, message.channel, ":arrows_counterclockwise: 回答を生成中...", {
     thread_ts: threadTs
   });
   
@@ -510,7 +558,217 @@ function determineConsultationCategory(userText) {
   return '全般';
 }
 
-// バックグラウンド処理を分離した関数
+
+// メッセージを分割して自動送信する関数 (詳細エラーハンドリング付き)
+async function sendLongMessage(client, channelId, messageTs, text, userId = null) {
+  const maxLength = 1200;
+
+  if (!text || text.trim() === '') {
+    try {
+      await client.chat.update({
+        channel: channelId,
+        ts: messageTs,
+        text: "（エラー: 回答が生成されませんでした）"
+      });
+    } catch (e) {
+      console.error("Failed to update message with empty answer error:", e);
+    }
+    return;
+  }
+
+  const cleanText = convertMarkdownToSlack(text);
+  console.log(`📏 処理対象メッセージ: ${cleanText.length}文字, 制限: ${maxLength}文字`);
+
+  // 短い場合はそのまま表示してUIボタンも追加
+  if (cleanText.length <= maxLength) {
+    try {
+      console.log('📤 短いメッセージとして直接更新を試行...');
+      await client.chat.update({
+        channel: channelId,
+        ts: messageTs,
+        text: cleanText
+      });
+      console.log('✅ 短いメッセージの更新完了');
+      
+      // 短いメッセージの場合もUIボタンを投稿
+      if (userId) {
+        console.log('🔘 UIボタンを追加中...');
+        await addUIButtons(client, channelId, messageTs, userId);
+        console.log('✅ UIボタン追加完了');
+      }
+    } catch (e) {
+      console.error("❌ 短いメッセージの更新でエラー:", {
+        error: e.message,
+        code: e.code,
+        response: e.data,
+        stack: e.stack,
+        channelId,
+        messageTs,
+        textLength: cleanText.length
+      });
+    }
+    return;
+  }
+
+  console.log(`📏 メッセージが長すぎるため自動分割します: ${cleanText.length}文字`);
+  
+  // メッセージを分割
+  const parts = [];
+  let textToSplit = cleanText;
+
+  while (textToSplit.length > 0) {
+    const part = textToSplit.substring(0, maxLength);
+    parts.push(part);
+    textToSplit = textToSplit.substring(maxLength);
+    console.log(`📊 分割パート作成: ${part.length}文字 (残り: ${textToSplit.length}文字)`);
+  }
+
+  console.log(`📋 分割完了: ${parts.length}個のパートに分割`);
+
+  try {
+    // 最初の部分で元メッセージを更新
+    const firstPart = parts[0];
+    console.log(`📤 最初のパート更新を試行... (${firstPart.length}文字)`);
+    
+    await client.chat.update({
+      channel: channelId,
+      ts: messageTs,
+      text: firstPart
+    });
+
+    console.log(`✅ 最初の部分を表示完了 (1/${parts.length})`);
+
+    // 残りの部分を順次投稿（自動）
+    for (let i = 1; i < parts.length; i++) {
+      try {
+        console.log(`📤 パート${i + 1}/${parts.length}を投稿中... (${parts[i].length}文字)`);
+        
+        // 少し間隔を空けて投稿
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        const result = await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: messageTs,
+          text: parts[i]
+        });
+        
+        console.log(`✅ パート${i + 1}/${parts.length}を投稿完了`, {
+          messageTs: result.ts,
+          channel: result.channel
+        });
+        
+      } catch (partError) {
+        console.error(`❌ パート${i + 1}の投稿でエラー:`, {
+          error: partError.message,
+          code: partError.code,
+          response: partError.data,
+          stack: partError.stack,
+          partIndex: i + 1,
+          totalParts: parts.length,
+          partLength: parts[i].length,
+          channelId,
+          threadTs: messageTs
+        });
+        
+        // 個別パートでエラーが発生した場合、エラーメッセージを投稿
+        try {
+          await client.chat.postMessage({
+            channel: channelId,
+            thread_ts: messageTs,
+            text: `⚠️ パート${i + 1}の表示でエラーが発生しました。\nエラー詳細: ${partError.message || 'Unknown error'}`
+          });
+        } catch (errorMsgError) {
+          console.error(`❌ エラーメッセージの投稿も失敗:`, {
+            error: errorMsgError.message,
+            code: errorMsgError.code,
+            response: errorMsgError.data
+          });
+        }
+        
+        // エラーが発生した場合、処理を継続するか中断するかを決定
+        if (partError.code === 'rate_limited') {
+          console.log('⏰ レート制限のため3秒待機...');
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          // リトライ
+          try {
+            console.log(`🔄 パート${i + 1}をリトライ中...`);
+            await client.chat.postMessage({
+              channel: channelId,
+              thread_ts: messageTs,
+              text: parts[i]
+            });
+            console.log(`✅ パート${i + 1}のリトライ成功`);
+          } catch (retryError) {
+            console.error(`❌ リトライも失敗:`, retryError);
+            break; // リトライも失敗した場合は中断
+          }
+        } else {
+          // レート制限以外のエラーの場合は中断
+          console.log(`🛑 重大なエラーのため残りのパート投稿を中断`);
+          break;
+        }
+      }
+    }
+
+    console.log('✅ 全ての分割メッセージの投稿処理完了');
+
+    // UIボタンを最下部に投稿
+    if (userId) {
+      try {
+        console.log('🔘 最終UIボタンを追加中...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await addUIButtons(client, channelId, messageTs, userId);
+        console.log('✅ 最終UIボタン追加完了');
+      } catch (buttonError) {
+        console.error('❌ UIボタン追加でエラー:', {
+          error: buttonError.message,
+          code: buttonError.code,
+          response: buttonError.data
+        });
+      }
+    }
+
+  } catch (error) {
+    const errorDetails = {
+      message: error.message,
+      code: error.code,
+      name: error.name,
+      stack: error.stack,
+      response: error.data,
+      channelId,
+      messageTs,
+      originalTextLength: text.length,
+      cleanTextLength: cleanText.length,
+      partsCount: parts.length,
+      maxLength,
+      timestamp: new Date().toISOString()
+    };
+
+    console.error("❌ メッセージの自動分割送信中にメジャーエラーが発生:", errorDetails);
+    
+    // より詳細なエラーメッセージを投稿
+    let errorMessage = "エラー: 回答の表示中に問題が発生しました。\n";
+        
+    try {
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: messageTs,
+        text: errorMessage
+      });
+    } catch (finalError) {
+      console.error("❌ 最終エラーメッセージの投稿も失敗:", {
+        error: finalError.message,
+        code: finalError.code,
+        response: finalError.data
+      });
+    }
+  }
+}
+
+
+
+// バックグラウンド処理を分離した関数（改良版）
 async function processConsultationInBackground(userKey, userText, consultationCategory, conversationId, userId, channelId, client, initialMessageTs) {
   try {
     // 処理開始前に再度重複チェック
@@ -556,10 +814,11 @@ async function processConsultationInBackground(userKey, userText, consultationCa
     // ストリーミングレスポンスの処理
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    
+
     let fullAnswer = '';
     let updateCounter = 0;
     let lastUpdateTime = Date.now();
+    const maxDisplayLength = 2500; // リアルタイム表示用の制限
 
     try {
       while (true) {
@@ -574,11 +833,11 @@ async function processConsultationInBackground(userKey, userText, consultationCa
             try {
               const jsonStr = line.slice(6);
               if (jsonStr.trim() === '' || jsonStr.trim() === '[DONE]') continue;
-              
+
               const data = JSON.parse(jsonStr);
 
               // conversation_idを保存（初回または更新時）
-              if (data.conversation_id) {
+              if (data.conversation_id && userConversations.get(userId) !== data.conversation_id) {
                 userConversations.set(userId, data.conversation_id);
                 console.log(`💾 conversation_id保存: ${userId} -> ${data.conversation_id}`);
               }
@@ -588,20 +847,20 @@ async function processConsultationInBackground(userKey, userText, consultationCa
                 if (data.answer) {
                   fullAnswer += data.answer;
                   updateCounter++;
-                  
+
                   const currentTime = Date.now();
-                  
+
                   // 更新頻度を制限（1秒間隔または文の終わりで）
                   if (currentTime - lastUpdateTime > 1000 || 
                       data.answer.includes('。') || 
                       data.answer.includes('！') || 
                       data.answer.includes('？') ||
                       data.answer.includes('\n')) {
-                    
+
                     lastUpdateTime = currentTime;
                     
-                    // Markdown記法をSlack記法に変換して更新
-                    const cleanAnswer = convertMarkdownToSlack(fullAnswer);
+                    // Markdown記法を除去して更新
+                    const cleanAnswer = removeMarkdownMarkup(fullAnswer);
                     
                     await client.chat.update({
                       channel: channelId,
@@ -613,18 +872,18 @@ async function processConsultationInBackground(userKey, userText, consultationCa
               } else if (data.event === 'message_end') {
                 console.log('Message end event received');
               }
-              
+
               // レスポンスが空の場合の処理
               if (!data.event && data.answer && !fullAnswer) {
                 fullAnswer = data.answer;
-                const cleanAnswer = convertMarkdownToSlack(fullAnswer);
+                const cleanAnswer = removeMarkdownMarkup(fullAnswer);
                 await client.chat.update({
                   channel: channelId,
                   ts: initialMessageTs,
                   text: cleanAnswer
                 });
               }
-              
+
             } catch (parseError) {
               console.log('JSON parse error (normal for streaming):', parseError.message);
               continue;
@@ -633,9 +892,9 @@ async function processConsultationInBackground(userKey, userText, consultationCa
         }
       }
       
-      // Markdown記法をSlack記法に変換して更新
-      const cleanAnswer = convertMarkdownToSlack(fullAnswer);
-      const finalText = cleanAnswer.trim() || "（エラーにより回答できません）";
+      // 最終的な回答で更新（Markdown記法を除去）
+      const cleanFinalAnswer = removeMarkdownMarkup(fullAnswer);
+      const finalText = cleanFinalAnswer.trim() || "（エラーにより回答できません）";
       await client.chat.update({
         channel: channelId,
         ts: initialMessageTs,
@@ -655,11 +914,11 @@ async function processConsultationInBackground(userKey, userText, consultationCa
 
   } catch (error) {
     console.error("Background processing error:", error);
-    
+
     // エラー処理済みマークを設定（重複防止）
     if (!errorHandledMessages.has(userKey)) {
       errorHandledMessages.add(userKey);
-      
+
       await client.chat.update({
         channel: channelId,
         ts: initialMessageTs,
@@ -669,7 +928,7 @@ async function processConsultationInBackground(userKey, userText, consultationCa
   } finally {
     // 処理完了後のクリーンアップ
     processingUsers.delete(userKey);
-    
+
     // エラー管理は一定時間後に自動削除（メモリリーク防止）
     setTimeout(() => {
       errorHandledMessages.delete(userKey);
@@ -677,7 +936,7 @@ async function processConsultationInBackground(userKey, userText, consultationCa
   }
 }
 
-// より包括的なMarkdown→Slack変換関数
+// Markdownの記法を除去する関数
 function removeMarkdownMarkup(text) {
   if (!text) return text;
   

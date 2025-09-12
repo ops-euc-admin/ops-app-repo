@@ -26,17 +26,17 @@ function removeBotMention(text, botUserId) {
 // スレッドID(thread_ts) <-> Dify conversation_id のマッピング（インメモリ例）
 const convMap = {};
 
-// 🔄 1時間ごとに古い会話データを削除
+// 🔄 6時間ごとに古い会話データを削除
 setInterval(() => {
   const now = Date.now();
-  const oneHour = 60 * 60 * 1000;
+  const sixHour = 60 * 60 * 6000;
   for (const ts in convMap) {
-    if (now - convMap[ts].updatedAt > oneHour) {
+    if (now - convMap[ts].updatedAt > sixHour) {
       delete convMap[ts];
       console.log(`🗑 conversation expired and deleted (thread_ts=${ts})`);
     }
   }
-}, 60 * 60 * 1000); // 1時間ごとにクリーンアップ処理
+}, 60 * 60 * 6000); // 6時間ごとにクリーンアップ処理
 
 app.event('app_mention', async ({ event, say }) => {
   if (!botUserId) return;
