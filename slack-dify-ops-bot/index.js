@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import pkg from '@slack/bolt';
+import http from 'http';
 const { App } = pkg;
 import fetch from 'node-fetch';
 import { LogLevel } from '@slack/logger';
@@ -481,52 +482,86 @@ async function processEvent({ event, client, context, logger }) {
     }
 }
 
+// ロックファイル用のディレクトリを定義
+const LOCK_DIR = './.locks';
+
+// アプリケーション起動時にロック用のディレクトリを作成
+(async () => {
+    try {
+        await fs.mkdir(LOCK_DIR, { recursive: true });
+    } catch (e) {
+        console.error("ロックディレクトリの作成に失敗しました。", e);
+    }
+})();
+
 // 1. メンション専用リスナー
 app.event('app_mention', async ({ body, client, context, logger }) => {
-    // リスナーの入口で、ボット自身のイベントやシステムイベントを完全に除外します
     if (body.event.bot_id || body.event.subtype) {
         return;
     }
     
-    // ★ 修正点: event_id の代わりにユーザーIDとタイムスタンプでキーを作成
     const deduplicationKey = `${body.event.user}-${body.event.ts}`;
-    
-    if (processedEventIds.has(deduplicationKey)) {
-        logger.info(`[Mention] 重複キー (${deduplicationKey}) を検知したため、スキップします。`);
+    const lockFilePath = path.join(LOCK_DIR, deduplicationKey.replace(/[^a-zA-Z0-9.-]/g, '_'));
+
+    try {
+        // 'wx'フラグは、ファイルが存在しない場合にのみ書き込みを成功させるアトミックな操作です
+        await fs.writeFile(lockFilePath, new Date().toISOString(), { flag: 'wx' });
+    } catch (error) {
+        // ファイル作成に失敗した場合（＝ファイルが既に存在する場合）、それは重複イベントを意味します
+        logger.warn(`[LOCK] 重複キー (${deduplicationKey}) のため処理をスキップします。`);
         return;
     }
-    processedEventIds.add(deduplicationKey);
-    setTimeout(() => { processedEventIds.delete(deduplicationKey); }, 60000);
+
+    logger.info(`[LOCK] ロックを取得しました: ${deduplicationKey}`);
 
     try {
         await processEvent({ event: body.event, client, context, logger });
     } catch (error) {
         logger.error('[Mention] イベント処理中にエラーが発生しました:', error);
+    } finally {
+        // 処理が成功しても失敗しても、必ずロックファイルを削除します
+        try {
+            await fs.unlink(lockFilePath);
+            logger.info(`[LOCK] ロックを解放しました: ${deduplicationKey}`);
+        } catch (unlinkError) {
+            logger.error(`[LOCK] ロックファイルの解放に失敗しました (${lockFilePath}):`, unlinkError);
+        }
     }
 });
 
 // 2. DM専用リスナー
 app.message(async ({ message, body, client, context, logger }) => {
-    // リスナーの入口で、ボット自身のイベントやシステムイベントを完全に除外します
     if (body.event.bot_id || body.event.subtype) {
         return;
     }
 
     if (message.channel_type === 'im') {
-        // ★ 修正点: event_id の代わりにユーザーIDとタイムスタンプでキーを作成
-        const deduplicationKey = `${body.event.user}-${body.event.ts}`;
+        const deduplicationKey = `${message.user}-${message.ts}`;
+        const lockFilePath = path.join(LOCK_DIR, deduplicationKey.replace(/[^a-zA-Z0-9.-]/g, '_'));
 
-        if (processedEventIds.has(deduplicationKey)) {
-            logger.info(`[DM] 重複キー (${deduplicationKey}) を検知したため、スキップします。`);
+        try {
+            // 'wx'フラグは、ファイルが存在しない場合にのみ書き込みを成功させるアトミックな操作です
+            await fs.writeFile(lockFilePath, new Date().toISOString(), { flag: 'wx' });
+        } catch (error) {
+            // ファイル作成に失敗した場合（＝ファイルが既に存在する場合）、それは重複イベントを意味します
+            logger.warn(`[LOCK] 重複キー (${deduplicationKey}) のため処理をスキップします。`);
             return;
         }
-        processedEventIds.add(deduplicationKey);
-        setTimeout(() => { processedEventIds.delete(deduplicationKey); }, 60000);
+
+        logger.info(`[LOCK] ロックを取得しました: ${deduplicationKey}`);
 
         try {
             await processEvent({ event: message, client, context, logger });
         } catch (error) {
             logger.error('[DM] イベント処理中にエラーが発生しました:', error);
+        } finally {
+            // 処理が成功しても失敗しても、必ずロックファイルを削除します
+            try {
+                await fs.unlink(lockFilePath);
+                logger.info(`[LOCK] ロックを解放しました: ${deduplicationKey}`);
+            } catch (unlinkError) {
+                logger.error(`[LOCK] ロックファイルの解放に失敗しました (${lockFilePath}):`, unlinkError);
+            }
         }
     }
 });
