@@ -15,6 +15,9 @@ const app = new App({
     logLevel: LogLevel.DEBUG,
 });
 
+// 短時間イベントIDをキャッシュするためのSet
+const processedEventIds = new Set();
+
 // 会話IDを一時的に保存するためのメモリ上のストア
 const conversationStore = {};
 
@@ -420,86 +423,113 @@ async function testLocalFileUpload(localFilePaths) {
     }
 }
 
-
-// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-//
-// 修正後のイベント処理ロジック
-//
-// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-
 /**
- * メンションやDMを処理し、Dify APIを呼び出す共通関数
- * @param {object} params
- * @param {object} params.event - Slackのイベントペイロード (`app_mention` または `message`)
- * @param {object} params.client - Slack WebClient
- * @param {object} params.context - イベントのコンテキスト
- * @param {object} params.logger - ロガー
- */
+ * メンションやDMを処理し、Dify APIを呼び出す共通関数
+ * @param {object} params
+ * @param {object} params.event - Slackのイベントペイロード (`app_mention` または `message`)
+ * @param {object} params.client - Slack WebClient
+ * @param {object} params.context - イベントのコンテキスト
+ * @param {object} params.logger - ロガー
+ */
 async function processEvent({ event, client, context, logger }) {
-    // ボット自身のメッセージは無視
-    if (event.bot_id) {
+
+    // ボット自身のメッセージは無視
+    if (event.bot_id) {
+        return;
+    }
+
+    let difyFilesPayload = [];
+    const hasFiles = event.files && event.files.length > 0;
+
+    try {
+        if (hasFiles) {
+            logger.info(`${event.files.length}個のファイルを処理します...`);
+            
+            const uploadPromises = event.files.map(async (file) => {
+                if (!file.url_private_download) {
+                    logger.warn(`ファイル ${file.name} にダウンロードURLがありません。スキップします。`);
+                    return null;
+                }
+                const fileBuffer = await downloadFile(file.url_private_download, context.botToken);
+                const difyUploadResult = await uploadFileToDify(fileBuffer, file.name, event.user, process.env.DIFY_API_KEY);
+                const fileType = getDifyFileType(file.mimetype);
+                return {
+                    type: fileType,
+                    transfer_method: 'local_file',
+                    upload_file_id: difyUploadResult.id
+                };
+            });
+
+            difyFilesPayload = (await Promise.all(uploadPromises)).filter(p => p !== null);
+            logger.info('全てのファイルのアップロードが完了しました。');
+        }
+
+        // Dify APIを呼び出す
+        await callDifyChatApi({
+            event: event,
+            client: client,
+            files: difyFilesPayload
+        });
+
+    } catch (error) {
+        logger.error('ファイル処理またはDify連携でエラーが発生しました:', error);
+        await client.chat.postMessage({
+            channel: event.channel,
+            text: `処理中にエラーが発生しました: ${error.message}`,
+            thread_ts: event.thread_ts || event.ts
+        });
+    }
+}
+
+// 1. メンション専用リスナー
+app.event('app_mention', async ({ body, client, context, logger }) => {
+    // リスナーの入口で、ボット自身のイベントやシステムイベントを完全に除外します
+    if (body.event.bot_id || body.event.subtype) {
+        return;
+    }
+    
+    // ★ 修正点: event_id の代わりにユーザーIDとタイムスタンプでキーを作成
+    const deduplicationKey = `${body.event.user}-${body.event.ts}`;
+    
+    if (processedEventIds.has(deduplicationKey)) {
+        logger.info(`[Mention] 重複キー (${deduplicationKey}) を検知したため、スキップします。`);
+        return;
+    }
+    processedEventIds.add(deduplicationKey);
+    setTimeout(() => { processedEventIds.delete(deduplicationKey); }, 60000);
+
+    try {
+        await processEvent({ event: body.event, client, context, logger });
+    } catch (error) {
+        logger.error('[Mention] イベント処理中にエラーが発生しました:', error);
+    }
+});
+
+// 2. DM専用リスナー
+app.message(async ({ message, body, client, context, logger }) => {
+    // リスナーの入口で、ボット自身のイベントやシステムイベントを完全に除外します
+    if (body.event.bot_id || body.event.subtype) {
         return;
     }
 
-    let difyFilesPayload = [];
-    const hasFiles = event.files && event.files.length > 0;
-
-    try {
-        if (hasFiles) {
-            logger.info(`${event.files.length}個のファイルを処理します...`);
-            
-            const uploadPromises = event.files.map(async (file) => {
-                if (!file.url_private_download) {
-                    logger.warn(`ファイル ${file.name} にダウンロードURLがありません。スキップします。`);
-                    return null;
-                }
-                const fileBuffer = await downloadFile(file.url_private_download, context.botToken);
-                const difyUploadResult = await uploadFileToDify(fileBuffer, file.name, event.user, process.env.DIFY_API_KEY);
-                const fileType = getDifyFileType(file.mimetype);
-                return {
-                    type: fileType,
-                    transfer_method: 'local_file',
-                    upload_file_id: difyUploadResult.id
-                };
-            });
-
-            difyFilesPayload = (await Promise.all(uploadPromises)).filter(p => p !== null);
-            logger.info('全てのファイルのアップロードが完了しました。');
-        }
-
-        // Dify APIを呼び出す
-        await callDifyChatApi({
-            event: event,
-            client: client,
-            files: difyFilesPayload
-        });
-
-    } catch (error) {
-        logger.error('ファイル処理またはDify連携でエラーが発生しました:', error);
-        await client.chat.postMessage({
-            channel: event.channel,
-            text: `処理中にエラーが発生しました: ${error.message}`,
-            thread_ts: event.thread_ts || event.ts
-        });
-    }
-}
-
-// 修正点 1: チャンネルでメンションされた時のイベント (`app_mention`) をリッスン
-// これがチャンネルでのメンションに反応するための主要なハンドラーです。
-app.event('app_mention', async ({ event, client, context, logger }) => {
-    await processEvent({ event, client, context, logger });
-});
-
-// 修正点 2: ダイレクトメッセージ(DM)をリッスン
-// このハンドラーはDMでの会話に限定されます。
-app.message(async ({ message, client, context, logger }) => {
-    // メッセージがDM (`im`) の場合のみ処理する
     if (message.channel_type === 'im') {
-        // `message` オブジェクトを `event` として共通処理関数に渡す
-        await processEvent({ event: message, client, context, logger });
+        // ★ 修正点: event_id の代わりにユーザーIDとタイムスタンプでキーを作成
+        const deduplicationKey = `${body.event.user}-${body.event.ts}`;
+
+        if (processedEventIds.has(deduplicationKey)) {
+            logger.info(`[DM] 重複キー (${deduplicationKey}) を検知したため、スキップします。`);
+            return;
+        }
+        processedEventIds.add(deduplicationKey);
+        setTimeout(() => { processedEventIds.delete(deduplicationKey); }, 60000);
+
+        try {
+            await processEvent({ event: message, client, context, logger });
+        } catch (error) {
+            logger.error('[DM] イベント処理中にエラーが発生しました:', error);
+        }
     }
 });
-
 
 // 接続確立・切断時のログ出力
 app.receiver.client.on('connected', () => {
@@ -537,3 +567,20 @@ process.on('uncaughtException', (err) => {
     console.error('[FATAL] 未処理例外:', err);
     process.exit(1);
 });
+
+const gracefulShutdown = async (signal) => {
+  console.log(`👋 ${signal}を受け取りました。安全にシャットダウンします...`);
+  try {
+    // Boltアプリの接続を正常に終了させます
+    await app.stop();
+    console.log('✅ シャットダウンが完了しました。');
+    process.exit(0);
+  } catch (error) {
+    console.error('シャットダウン中にエラーが発生しました:', error);
+    process.exit(1);
+  }
+};
+
+// Ctrl+C (SIGINT) やその他の終了シグナルを捕捉します
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
