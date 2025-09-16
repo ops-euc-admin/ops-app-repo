@@ -936,6 +936,7 @@ async function processConsultationInBackground(userKey, userText, consultationCa
   }
 }
 
+<<<<<<< HEAD
 // Markdownの記法を除去する関数
 function removeMarkdownMarkup(text) {
   if (!text) return text;
@@ -994,6 +995,9 @@ function removeMarkdownMarkup(text) {
     .replace(/^\s+|\s+$/g, '')            // 先頭末尾の空白を除去
     .trim();
 }
+=======
+
+>>>>>>> b2132aa4e0608ad0fada5fbc26dadb743ea39013
 
 // より高機能な変換関数（Block Kit使用時）
 function markdownToSlackBlocks(text) {
@@ -1021,7 +1025,7 @@ function markdownToSlackBlocks(text) {
     }
     
     // 通常のテキストセクション
-    const cleanText = removeMarkdownMarkup(section);
+    const cleanText = convertMarkdownToSlack(section);
     if (cleanText.length > 3000) {
       // 長いテキストは分割
       const chunks = cleanText.match(/.{1,3000}(\s|$)/g) || [cleanText];
