@@ -986,64 +986,6 @@ async function processConsultationInBackground(userKey, userText, consultationCa
 }
 
 
-// より包括的なMarkdown→Slack変換関数
-function removeMarkdownMarkup(text) {
-  if (!text) return text;
-  
-  return text
-    // コードブロックを先に処理（言語指定を除去）
-    .replace(/```[\w+]*\n([\s\S]*?)```/g, '```\n$1```')
-    
-    // インラインコードを保持（Slackでもサポート）
-    // .replace(/`([^`]+)`/g, '`$1`') // そのまま保持
-    
-    // 太字記法をSlack記法に変換
-    .replace(/\*\*(.*?)\*\*/g, '*$1*')    // **text** -> *text*
-    .replace(/__(.*?)__/g, '*$1*')        // __text__ -> *text*
-    
-    // 斜体記法をSlack記法に変換
-    .replace(/(?<!\*)\*([^*\s][^*]*?[^*\s])\*(?!\*)/g, '_$1_')  // *text* -> _text_ (太字と区別)
-    .replace(/_([^_\s][^_]*?[^_\s])_/g, '_$1_')                 // _text_ -> _text_ (そのまま)
-    
-    // 見出し記法をSlackの太字に変換
-    .replace(/^#{1}\s+(.+)$/gm, '*$1*')   // # H1 -> *H1*
-    .replace(/^#{2,6}\s+(.+)$/gm, '*$1*') // ## H2-H6 -> *H1*
-    
-    // リンク記法を変換
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')  // [text](url) -> <url|text>
-    
-    // リスト記法をSlack記法に変換
-    .replace(/^\s*[\*\-\+]\s+(.+)$/gm, '• $1')       // * - + item -> • item
-    .replace(/^\s*(\d+)\.\s+(.+)$/gm, '$1. $2')      // 1. item -> 1. item (数字リストはそのまま)
-    
-    // 引用記法を変換
-    .replace(/^>\s+(.+)$/gm, '> $1')      // > quote -> > quote (Slackでも同じ)
-    
-    // 水平線を変換
-    .replace(/^(\-{3,}|\*{3,}|_{3,})$/gm, '---')  // --- *** ___ -> ---
-    
-    // 取り消し線を変換
-    .replace(/~~(.+?)~~/g, '~$1~')        // ~~text~~ -> ~text~
-    
-    // テーブル記法を除去（Slackでは複雑なテーブルは表示できない）
-    .replace(/\|.*?\|/g, (match) => {
-      // テーブルの区切り行を除去
-      if (match.match(/^[\|\-\s:]+$/)) return '';
-      // テーブルの内容はパイプを除去してスペース区切りに
-      return match.replace(/\|/g, ' ').trim();
-    })
-    
-    // HTMLタグを除去
-    .replace(/<[^>]*>/g, '')
-    
-    // エスケープ文字を処理
-    .replace(/\\(.)/g, '$1')              // \* -> *
-    
-    // 複数の改行を整理
-    .replace(/\n{3,}/g, '\n\n')           // 3個以上の改行を2個に
-    .replace(/^\s+|\s+$/g, '')            // 先頭末尾の空白を除去
-    .trim();
-}
 
 // より高機能な変換関数（Block Kit使用時）
 function markdownToSlackBlocks(text) {
@@ -1071,7 +1013,7 @@ function markdownToSlackBlocks(text) {
     }
     
     // 通常のテキストセクション
-    const cleanText = removeMarkdownMarkup(section);
+    const cleanText = convertMarkdownToSlack(section);
     if (cleanText.length > 3000) {
       // 長いテキストは分割
       const chunks = cleanText.match(/.{1,3000}(\s|$)/g) || [cleanText];
