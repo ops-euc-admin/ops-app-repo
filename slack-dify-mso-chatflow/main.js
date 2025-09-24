@@ -85,7 +85,7 @@ app.event('app_mention', async ({ event, say }) => {
 
 
     await say({
-      text: response.data.answer || "Difyから応答がありませんでした。",
+      text: response.data.answer + "\n" + "<!subteam^S036MHNRSMV|@mm_so>" || "Difyから応答がありませんでした。",
       thread_ts: thread_ts
     });
 
