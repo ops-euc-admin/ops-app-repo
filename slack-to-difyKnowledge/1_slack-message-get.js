@@ -57,14 +57,14 @@ async function getChannelName(channelId) {
 
 /**
  * 指定されたSlackチャンネルから投稿を取得し、CSVを生成します。
- * 予防的な待機（スロットリング）を実装済みです。
+ * 直近90日取得フラグがtrueの場合は、90日前以降の投稿のみ取得します。
  * @param {string} channelId チャンネルID
  * @param {string} [name] ファイル名に使用する名前（オプション）
- * @param {object} [options] オプション { output: 'file' | 'string' }
+ * @param {object} [options] オプション { output: 'file' | 'string', latest90days: boolean }
  * @returns {Promise<string>} ファイル保存の場合はファイルパス、文字列の場合はCSVデータ
  */
 async function getSlackPostsAndConvertToCsv(channelId, name, options = {}) {
-    const { output = 'file' } = options; // デフォルトはファイル出力
+    const { output = 'file', latest90days = false } = options; // 直近90日取得フラグ追加
 
     // --- 認証とチャンネル情報の取得 ---
     if (!channelId) { throw new Error("チャンネルIDが指定されていません。"); }
@@ -101,6 +101,12 @@ async function getSlackPostsAndConvertToCsv(channelId, name, options = {}) {
     const safeName = (name || channelName).replace(/[^a-zA-Z0-9_\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g, '_');
     const sourceLabel = `Slack #${channelName}`;
 
+    // 直近90日取得の場合の oldest ts
+    let oldestTs = undefined;
+    if (latest90days) {
+        oldestTs = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+    }
+
     if (output === 'file') {
         // --- ファイルへのストリーミング出力 ---
         const filePath = `slack_${safeName}.csv`;
@@ -118,6 +124,7 @@ async function getSlackPostsAndConvertToCsv(channelId, name, options = {}) {
             let hasMore = true;
             while(hasMore) {
                 const params = new URLSearchParams({ channel: channelId, limit: '200' });
+                if (oldestTs) params.append('oldest', oldestTs.toString());
                 if (cursor) params.append('cursor', cursor);
                 const res = await fetchWithRateLimitRetry(`https://slack.com/api/conversations.history?${params.toString()}`, { method: 'GET', headers }, 'history-scan');
                 const data = await res.json();
@@ -150,6 +157,7 @@ async function getSlackPostsAndConvertToCsv(channelId, name, options = {}) {
             while(hasMore) {
                 pageCount++; // ★カウントアップ
                 const params = new URLSearchParams({ channel: channelId, limit: '200' });
+                if (oldestTs) params.append('oldest', oldestTs.toString());
                 if (cursor) params.append('cursor', cursor);
 
                 // ★現在の進捗を出力
@@ -259,6 +267,7 @@ async function getSlackPostsAndConvertToCsv(channelId, name, options = {}) {
             let hasMore = true;
             while(hasMore) {
                 const params = new URLSearchParams({ channel: channelId, limit: '200' });
+                if (oldestTs) params.append('oldest', oldestTs.toString());
                 if (cursor) params.append('cursor', cursor);
                 const res = await fetchWithRateLimitRetry(`https://slack.com/api/conversations.history?${params.toString()}`, { method: 'GET', headers }, 'history-scan');
                 const data = await res.json();
@@ -287,6 +296,7 @@ async function getSlackPostsAndConvertToCsv(channelId, name, options = {}) {
             hasMore = true;
             while(hasMore) {
                 const params = new URLSearchParams({ channel: channelId, limit: '200' });
+                if (oldestTs) params.append('oldest', oldestTs.toString());
                 if (cursor) params.append('cursor', cursor);
                 const res = await fetchWithRateLimitRetry(`https://slack.com/api/conversations.history?${params.toString()}`, { method: 'GET', headers }, 'history-write');
                 const data = await res.json();

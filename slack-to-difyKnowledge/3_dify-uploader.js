@@ -176,6 +176,35 @@ async function uploadOrUpdateCsvToDify(csvString, knowledgeBaseId, fileName) {
     return createDocumentInDify(csvString, knowledgeBaseId, fileName);
 }
 
+/**
+ * CSV文字列をDifyのナレッジベースにアップロードします。
+ * 既存ドキュメントがあれば削除し、新規作成します。
+ * @param {string} csvString - アップロードするCSVデータ（文字列）
+ * @param {string} knowledgeBaseId - アップロード先のDifyナレッジベースID (dataset_id)
+ * @param {string} fileName - Dify上で表示されるファイル名（拡張子含む）。既存ドキュメントの検索にも使用。
+ * @param {Object} options - オプションパラメータ
+ * @param {boolean} options.latest90days - 直近90日取得モードを有効にするフラグ
+ */
+async function uploadCsvToDify(csvString, knowledgeBaseId, fileName, options = {}) {
+  // options.latest90days で直近90日取得フラグを受け取る
+  const { latest90days = false } = options;
+  if (latest90days) {
+    console.log(`⚡️ Difyアップロード: 直近90日取得モード (${fileName})`);
+    fileName = `${fileName.replace(/\.csv$/, '')}_latest90days.csv`; // ファイル名にフラグを追加
+  }
+
+  // 既存ドキュメントを検索
+  const existingDocs = await findDocumentsInDify(knowledgeBaseId, fileName); 
+
+  // 見つかった既存ドキュメントをすべて削除
+  for (const doc of existingDocs) {
+      await deleteDocumentFromDify(knowledgeBaseId, doc.id);
+  }
+
+  // 新規ドキュメントとしてアップロード
+  return createDocumentInDify(csvString, knowledgeBaseId, fileName);
+}
+
 
 // --- コマンドラインからの独立実行用の部分 ---
 // スクリプトが直接 'node dify-uploader.js' のように実行された場合にのみこのブロックが動作します。

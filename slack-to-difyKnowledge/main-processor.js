@@ -17,7 +17,7 @@ async function processChannels(channels) {
     }
 
     for (const channel of channels) {
-        const { channel_id, name, knowledge_base_id } = channel;
+        const { channel_id, name, knowledge_base_id, latest_90days } = channel;
 
         // 必須フィールドのチェック
         if (!channel_id || !name || !knowledge_base_id) {
@@ -29,7 +29,7 @@ async function processChannels(channels) {
             console.log(`\n--- ${name} (${channel_id}) の処理を開始します ---`);
             
             // 1. Slackから投稿を取得し、CSV文字列を受け取る
-            const { csvString: slackCsv, safeName } = await getSlackPostsAndConvertToCsv(channel_id, name, { output: 'string' });
+            const { csvString: slackCsv, safeName } = await getSlackPostsAndConvertToCsv(channel_id, name, { output: 'string', latest90days: !!latest_90days });
             console.log(`Slackデータ取得とCSV文字列生成完了: ${safeName}`);
             
             // 2. CSV文字列をDify用に変換し、"分割されたCSV文字列の配列"を受け取る

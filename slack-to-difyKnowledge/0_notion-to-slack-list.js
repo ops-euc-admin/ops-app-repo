@@ -47,14 +47,17 @@ async function getSlackChannelTargetFromNotion() {
             const name = properties["Difyナレッジ登録名"]?.title?.[0]?.plain_text || ""; // 'name' にマッピング
             const knowledgeBaseId = properties["dify_db_key"]?.rich_text?.[0]?.plain_text || ""; // 'knowledge_base_id' にマッピング
             const documentId = properties["document_id"]?.rich_text?.[0]?.plain_text || null; // オプション
+            // 直近90日取得プロパティ（checkbox型想定）
+            const latest90days = properties["直近90日取得"]?.checkbox === true;
 
             // いずれか一つの項目が記載されていない場合は出力しない
             if (channelId && name && knowledgeBaseId) {
                 channels.push({
                     channel_id: channelId,
-                    name: name,
+                    name: latest90days ? `${name}_latest90days` : name,
                     knowledge_base_id: knowledgeBaseId,
-                    document_id: documentId
+                    document_id: documentId,
+                    latest_90days: latest90days // 追加
                 });
             } else {
                 console.warn(`Notionの行で必須情報が不足しています。スキップします: ${JSON.stringify(properties)}`);
