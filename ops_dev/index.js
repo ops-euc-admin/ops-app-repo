@@ -34,6 +34,8 @@ const CONSULTATION_CATEGORIES = [
   { text: "Legal", value: "Legal" },
   { text: "IT", value: "IT" },
   { text: "ガバナンス", value: "ガバナンス" },
+  { text: "CPT", value: "CPT" },
+  { text: "MPT", value: "MPT" },
   { text: "全般", value: "全般" }
 ];
 
@@ -336,14 +338,20 @@ app.action('submit_consultation', async ({ ack, body, client }) => {
   }
 });
 
-// 再質問ボタンのクリック処理
-app.action('resubmit_consultation', async ({ ack, body, client }) => {
+// 同じ内容を詳細に調べるボタンのクリック処理
+app.action('resubmit_deep_research', async ({ ack, body, client }) => {
   await ack();
 
   try {
-    const [category, text] = body.actions[0].value.split('|');
-    const userId = body.user.id;
+// 2. valueからテキストのみ取得
+    //    元の値が 'category|text' 形式でも 'text' のみでも対応
+    const rawValue = body.actions[0].value;
+    const text = rawValue.includes('|') ? rawValue.split('|')[1] : rawValue;
     
+    const userId = body.user.id;
+
+    // カテゴリを "Deepresearch" に固定
+    const category = "Deep research";
     // 新しい回答生成メッセージを投稿（動画リアクション付き）
     const initialMessage = await postSlackMessage(client, body.channel.id, ":repeat: 回答を再生成中...", {
       thread_ts: body.message.ts
@@ -462,101 +470,6 @@ app.action('show_more_continuation', async ({ ack, body, client, action }) => {
     console.error('show_more_continuation action error:', error);
   }
 });
-
-// 直接的な質問の場合の処理（従来のロジック）
-async function handleDirectConsultation(userText, message, client) {
-  const userId = message.user;
-  const messageTs = message.ts;
-  
-  // より確実な重複防止キー生成
-  const crypto = require('crypto');
-  const contentHash = crypto.createHash('md5').update(userText).digest('hex').substring(0, 8);
-  const userKey = `${userId}-${messageTs}-${contentHash}`;
-  
-  // 重複処理を防ぐチェック
-  if (processingUsers.has(userKey)) {
-    console.log(`重複処理をスキップ: ${userKey}`);
-    return;
-  }
-  
-  processingUsers.add(userKey);
-  
-  // ユーザーの既存conversation_idを取得（なければ空文字）
-  let conversationId = userConversations.get(userId) || "";
-  console.log(`📱 ユーザー ${userId} の既存conversation_id: "${conversationId}"`);
-
-  // 初回投稿（"回答中..."のプレースホルダー）
-  const threadTs = message.subtype === 'message_changed' ? message.message.ts : message.ts;
-  const initialMessage = await postSlackMessage(client, message.channel, ":arrows_counterclockwise: 回答を生成中...", {
-    thread_ts: threadTs
-  });
-  
-  // 相談カテゴリを自動判定
-  const consultationCategory = determineConsultationCategory(userText);
-  
-  // 直接質問の場合も入力内容を保存
-  saveUserInput(userId, consultationCategory, userText);
-  
-  // バックグラウンドで非同期処理を実行
-  processConsultationInBackground(
-    userKey,
-    userText,
-    consultationCategory,
-    conversationId,
-    userId,
-    message.channel,
-    client,
-    initialMessage.ts
-  );
-}
-
-// 相談カテゴリを判定する関数
-function determineConsultationCategory(userText) {
-  const text = userText.toLowerCase();
-  
-  // FP&A (Financial Planning & Analysis) 関連
-  if (text.includes('予算') || text.includes('計画') || text.includes('分析') || 
-      text.includes('財務計画') || text.includes('予実') || text.includes('fp&a') ||
-      text.includes('財務分析') || text.includes('業績') || text.includes('売上') ||
-      text.includes('利益') || text.includes('コスト')) {
-    return 'FP&A';
-  }
-  
-  // Accounting (会計) 関連
-  if (text.includes('会計') || text.includes('経理') || text.includes('仕訳') || 
-      text.includes('決算') || text.includes('税務') || text.includes('監査') ||
-      text.includes('accounting') || text.includes('帳簿') || text.includes('財務諸表') ||
-      text.includes('損益') || text.includes('貸借')) {
-    return 'Accounting';
-  }
-  
-  // Legal (法務) 関連
-  if (text.includes('法務') || text.includes('契約') || text.includes('規約') || 
-      text.includes('legal') || text.includes('コンプライアンス') || text.includes('法的') ||
-      text.includes('条項') || text.includes('規制') || text.includes('特約') ||
-      text.includes('法律') || text.includes('権利')) {
-    return 'Legal';
-  }
-  
-  // IT 関連
-  if (text.includes('it') || text.includes('システム') || text.includes('技術') || 
-      text.includes('セキュリティ') || text.includes('データ') || text.includes('ソフトウェア') ||
-      text.includes('プラットフォーム') || text.includes('インフラ') || text.includes('開発') ||
-      text.includes('デジタル') || text.includes('アプリ')) {
-    return 'IT';
-  }
-  
-  // ガバナンス 関連
-  if (text.includes('ガバナンス') || text.includes('governance') || text.includes('統制') || 
-      text.includes('管理体制') || text.includes('リスク管理') || text.includes('内部統制') ||
-      text.includes('方針') || text.includes('戦略') || text.includes('推進') ||
-      text.includes('進め方') || text.includes('組織')) {
-    return 'ガバナンス';
-  }
-  
-  // その他全般
-  return '全般';
-}
 
 
 // メッセージを分割して自動送信する関数 (詳細エラーハンドリング付き)
@@ -858,15 +771,28 @@ async function processConsultationInBackground(userKey, userText, consultationCa
                       data.answer.includes('\n')) {
 
                     lastUpdateTime = currentTime;
-                    
-                    // Markdown記法を除去して更新
-                    const cleanAnswer = removeMarkdownMarkup(fullAnswer);
-                    
-                    await client.chat.update({
-                      channel: channelId,
-                      ts: initialMessageTs,
-                      text: cleanAnswer || "回答を生成中..."
-                    });
+
+                    // リアルタイム表示は制限された長さで
+                    let displayText;
+                    if (fullAnswer.length > maxDisplayLength) {
+                      displayText = convertMarkdownToSlack(fullAnswer.substring(0, maxDisplayLength)) + '\n\n（回答を生成中...）';
+                    } else {
+                      displayText = convertMarkdownToSlack(fullAnswer) || "回答を生成中...";
+                    }
+
+                    try {
+                      // ここで displayText の長さを制限
+                      displayText = displayText.substring(0, maxDisplayLength);
+
+                      await client.chat.update({
+                        channel: channelId,
+                        ts: initialMessageTs,
+                        text: displayText
+                      });
+                    } catch (updateError) {
+                      // リアルタイム更新でエラーが発生しても処理を継続
+                      console.log(`リアルタイム更新エラー: ${updateError.message}`);
+                    }
                   }
                 }
               } else if (data.event === 'message_end') {
@@ -876,12 +802,6 @@ async function processConsultationInBackground(userKey, userText, consultationCa
               // レスポンスが空の場合の処理
               if (!data.event && data.answer && !fullAnswer) {
                 fullAnswer = data.answer;
-                const cleanAnswer = removeMarkdownMarkup(fullAnswer);
-                await client.chat.update({
-                  channel: channelId,
-                  ts: initialMessageTs,
-                  text: cleanAnswer
-                });
               }
 
             } catch (parseError) {
@@ -891,16 +811,66 @@ async function processConsultationInBackground(userKey, userText, consultationCa
           }
         }
       }
-      
-      // 最終的な回答で更新（Markdown記法を除去）
-      const cleanFinalAnswer = removeMarkdownMarkup(fullAnswer);
-      const finalText = cleanFinalAnswer.trim() || "（エラーにより回答できません）";
-      await client.chat.update({
-        channel: channelId,
-        ts: initialMessageTs,
-        text: finalText
-      });
-      
+
+      console.log(`📏 最終回答の長さ: ${fullAnswer.length}文字`);
+
+      // 最終的な回答を長さに応じて送信
+      if (fullAnswer.trim()) {
+        await sendLongMessage(client, channelId, initialMessageTs, fullAnswer);
+      } else {
+        await client.chat.update({
+          channel: channelId,
+          ts: initialMessageTs,
+          text: "（エラーにより回答できません）"
+        });
+      }
+
+      // 回答生成完了後に、ボタン付きのメッセージを別途投稿（エラーハンドリング付き）
+      try {
+        // ボタンのvalueも長さ制限を考慮
+        const buttonValue = `${consultationCategory}|${userText.length > 1000 ? userText.substring(0, 1000) + '...' : userText}`;
+
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: initialMessageTs, // 同じスレッド内に投稿
+          blocks: [
+            {
+              type: "actions",
+              elements: [
+                {
+                  type: "button",
+                  text: {
+                    type: "plain_text",
+                    text: "🔄 同じ内容を詳細に調べる"
+                  },
+                  action_id: "resubmit_deep_research",
+                  value: buttonValue
+                },
+                {
+                  type: "button",
+                  text: {
+                    type: "plain_text",
+                    text: "✏️ 内容を編集して質問"
+                  },
+                  action_id: "edit_consultation"
+                }
+                // {
+                //   type: "button",
+                //   text: {
+                //     type: "plain_text",
+                //     text: "✅質問完了"
+                //   },
+                //   action_id: "to_zapier"
+                // }
+              ]
+            }
+          ]
+        });
+      } catch (buttonError) {
+        console.error("Error posting action buttons:", buttonError);
+        // ボタンの投稿に失敗しても、メイン処理は成功として扱う
+      }
+
       // 完了ログ（詳細版）
       console.log(`✅ 会話完了 - ユーザー: ${userId}`);
       console.log(`📊 回答長: ${fullAnswer.length}文字`);
@@ -936,68 +906,7 @@ async function processConsultationInBackground(userKey, userText, consultationCa
   }
 }
 
-<<<<<<< HEAD
-// Markdownの記法を除去する関数
-function removeMarkdownMarkup(text) {
-  if (!text) return text;
-  
-  return text
-    // コードブロックを先に処理（言語指定を除去）
-    .replace(/```[\w+]*\n([\s\S]*?)```/g, '```\n$1```')
-    
-    // インラインコードを保持（Slackでもサポート）
-    // .replace(/`([^`]+)`/g, '`$1`') // そのまま保持
-    
-    // 太字記法をSlack記法に変換
-    .replace(/\*\*(.*?)\*\*/g, '*$1*')    // **text** -> *text*
-    .replace(/__(.*?)__/g, '*$1*')        // __text__ -> *text*
-    
-    // 斜体記法をSlack記法に変換
-    .replace(/(?<!\*)\*([^*\s][^*]*?[^*\s])\*(?!\*)/g, '_$1_')  // *text* -> _text_ (太字と区別)
-    .replace(/_([^_\s][^_]*?[^_\s])_/g, '_$1_')                 // _text_ -> _text_ (そのまま)
-    
-    // 見出し記法をSlackの太字に変換
-    .replace(/^#{1}\s+(.+)$/gm, '*$1*')   // # H1 -> *H1*
-    .replace(/^#{2,6}\s+(.+)$/gm, '*$1*') // ## H2-H6 -> *H1*
-    
-    // リンク記法を変換
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')  // [text](url) -> <url|text>
-    
-    // リスト記法をSlack記法に変換
-    .replace(/^\s*[\*\-\+]\s+(.+)$/gm, '• $1')       // * - + item -> • item
-    .replace(/^\s*(\d+)\.\s+(.+)$/gm, '$1. $2')      // 1. item -> 1. item (数字リストはそのまま)
-    
-    // 引用記法を変換
-    .replace(/^>\s+(.+)$/gm, '> $1')      // > quote -> > quote (Slackでも同じ)
-    
-    // 水平線を変換
-    .replace(/^(\-{3,}|\*{3,}|_{3,})$/gm, '---')  // --- *** ___ -> ---
-    
-    // 取り消し線を変換
-    .replace(/~~(.+?)~~/g, '~$1~')        // ~~text~~ -> ~text~
-    
-    // テーブル記法を除去（Slackでは複雑なテーブルは表示できない）
-    .replace(/\|.*?\|/g, (match) => {
-      // テーブルの区切り行を除去
-      if (match.match(/^[\|\-\s:]+$/)) return '';
-      // テーブルの内容はパイプを除去してスペース区切りに
-      return match.replace(/\|/g, ' ').trim();
-    })
-    
-    // HTMLタグを除去
-    .replace(/<[^>]*>/g, '')
-    
-    // エスケープ文字を処理
-    .replace(/\\(.)/g, '$1')              // \* -> *
-    
-    // 複数の改行を整理
-    .replace(/\n{3,}/g, '\n\n')           // 3個以上の改行を2個に
-    .replace(/^\s+|\s+$/g, '')            // 先頭末尾の空白を除去
-    .trim();
-}
-=======
 
->>>>>>> b2132aa4e0608ad0fada5fbc26dadb743ea39013
 
 // より高機能な変換関数（Block Kit使用時）
 function markdownToSlackBlocks(text) {
